@@ -1,26 +1,19 @@
-// package com.myorg;
+package com.myorg;
 
-// import software.amazon.awscdk.App;
-// import software.amazon.awscdk.assertions.Template;
-// import java.io.IOException;
+import org.junit.jupiter.api.Test;
+import software.amazon.awscdk.App;
+import software.amazon.awscdk.assertions.Template;
 
-// import java.util.HashMap;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
-// import org.junit.jupiter.api.Test;
+class CdkBaseTest {
+    @Test
+    void synthesizesAnEmptyBootstrapStack() {
+        App app = new App();
+        CdkBaseStack stack = new CdkBaseStack(app, "test");
 
-// example test. To run these tests, uncomment this file, along with the
-// example resource in java/src/main/java/com/myorg/CdkBaseStack.java
-// public class CdkBaseTest {
+        Template template = Template.fromStack(stack);
 
-//     @Test
-//     public void testStack() throws IOException {
-//         App app = new App();
-//         CdkBaseStack stack = new CdkBaseStack(app, "test");
-
-//         Template template = Template.fromStack(stack);
-
-//         template.hasResourceProperties("AWS::SQS::Queue", new HashMap<String, Number>() {{
-//           put("VisibilityTimeout", 300);
-//         }});
-//     }
-// }
+        assertEquals(0, template.findResources("AWS::SQS::Queue").size());
+    }
+}

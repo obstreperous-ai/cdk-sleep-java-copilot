@@ -1,18 +1,16 @@
-# Welcome to your CDK Java project!
+# cdk-sleep-java-copilot
 
-This is a blank project for CDK development with Java.
+This repository contains the Java AWS CDK foundation for an event-driven sleep audio pipeline that will ingest audio from Amazon S3, route workflow events through EventBridge, process and enrich assets, and publish resulting artifacts and notifications to AWS services such as S3, DynamoDB, and SNS.
 
-The `cdk.json` file tells the CDK Toolkit how to execute your app.
+## Strict TDD rules
 
-It is a [Maven](https://maven.apache.org/) based project, so you can open this project with any Maven compatible Java IDE to build and run tests.
+- Always write or update the failing test before implementation.
+- Make the smallest possible implementation change to satisfy the test.
+- Re-run the relevant tests after each meaningful change.
+- Keep `ARCHITECTURE.md` and its Mermaid diagram aligned with the current design.
+- Run `mvn test` and `cdk synth` before considering work complete.
 
 ## Useful commands
 
- * `mvn package`     compile and run tests
- * `cdk ls`          list all stacks in the app
- * `cdk synth`       emits the synthesized CloudFormation template
- * `cdk deploy`      deploy this stack to your default AWS account/region
- * `cdk diff`        compare deployed stack with current state
- * `cdk docs`        open CDK documentation
-
-Enjoy!
+- `mvn test`
+- `npx aws-cdk synth`

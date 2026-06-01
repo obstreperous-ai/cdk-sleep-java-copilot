@@ -1,5 +1,11 @@
 # Contributing
 
+## Source of truth
+
+[`ARCHITECTURE.md`](ARCHITECTURE.md) is the single source of truth for the Event-Driven Sleep
+Audio Pipeline. Read it before starting any issue and ensure every change stays consistent with
+its description and Mermaid diagram.
+
 ## Working agreement
 
 - Follow strict TDD: write or update a failing test first, then implement the smallest change needed to make it pass.

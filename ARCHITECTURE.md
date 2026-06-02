@@ -1,8 +1,9 @@
 # Architecture
 
-> **Status:** Design (no CDK stack code yet). This document is the **single source of
-> truth** for the Event-Driven Sleep Audio Pipeline. Every subsequent issue must keep this
-> file — and its Mermaid diagram — in sync with the implementation under strict TDD.
+> **Status:** Partial Implementation (Issue #3 complete). The core S3 buckets and EventBridge
+> rule are now implemented. This document is the **single source of truth** for the Event-Driven
+> Sleep Audio Pipeline. Every subsequent issue must keep this file — and its Mermaid diagram — in
+> sync with the implementation under strict TDD.
 
 ## 1. High-Level Overview
 
@@ -115,6 +116,34 @@ The diagram intentionally mirrors the staged data flow in Section 2: ingestion a
 detection feed the Step Functions workflow, which performs validation, Polly/Bedrock enrichment,
 versioned output storage, DynamoDB cataloguing, and SNS notification, with CloudWatch observing
 every stage and the failure path routing errors straight to notification.
+
+## 3.1. Implemented Components (Issue #3)
+
+The following foundational resources are now implemented:
+
+### Input S3 Bucket (`SleepAudioInputBucket`)
+- **Encryption**: S3-managed encryption (AES256) for data at rest
+- **Versioning**: Enabled to track all changes and support reprocessing
+- **Public Access**: Fully blocked (all 4 public access settings enabled)
+- **EventBridge Notifications**: Enabled to emit S3 Object Created events to EventBridge
+- **Removal Policy**: RETAIN to prevent accidental deletion
+
+### Output S3 Bucket (`SleepAudioOutputBucket`)
+- **Encryption**: S3-managed encryption (AES256) for data at rest
+- **Versioning**: Enabled to preserve all processed audio versions
+- **Public Access**: Fully blocked (all 4 public access settings enabled)
+- **Removal Policy**: RETAIN to prevent accidental deletion
+
+### EventBridge Rule (`S3ObjectCreatedRule`)
+- **Event Pattern**: Triggers on `Object Created` events from the Input Bucket
+- **Source**: `aws.s3`
+- **Detail Type**: `Object Created`
+- **State**: ENABLED
+- **Target**: Placeholder SQS queue (will be replaced with Step Functions State Machine in Issue #4)
+
+These resources establish the ingestion and event detection foundation for the pipeline. The
+placeholder SQS queue serves as a temporary target until the Step Functions workflow is
+implemented in the next issue.
 
 ## 4. Key AWS Services and Rationale
 

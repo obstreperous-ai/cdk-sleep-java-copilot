@@ -1,12 +1,192 @@
 # Architecture
 
-This repository will define an event-driven sleep audio pipeline on AWS using the Java CDK. Sleep audio source files land in an ingestion S3 bucket, which emits object-created events to Amazon EventBridge. EventBridge routes those events to downstream processing components that validate metadata, normalize and enrich the audio payload, and coordinate storage of derivative outputs. Processed audio artifacts are written back to S3, processing state and catalog metadata are recorded in DynamoDB, and important pipeline outcomes such as failures or publish-ready notifications are fanned out through SNS for operators and downstream consumers. The design is intentionally decomposed into event-driven stages so each step can be implemented and tested independently under strict TDD as the system evolves issue by issue.
+> **Status:** Design (no CDK stack code yet). This document is the **single source of
+> truth** for the Event-Driven Sleep Audio Pipeline. Every subsequent issue must keep this
+> file — and its Mermaid diagram — in sync with the implementation under strict TDD.
+
+## 1. High-Level Overview
+
+The **Event-Driven Sleep Audio Pipeline** is a serverless, fully event-driven system on AWS,
+defined with the **Java AWS CDK**. It lets users upload raw audio (voice recordings, ambient
+sounds) and turns it into polished, soothing sleep audio artifacts that are catalogued,
+versioned, and announced to downstream consumers.
+
+The system is decomposed into small, independently testable stages connected by events rather
+than direct calls. This loose coupling lets each stage be implemented, tested, and deployed in
+isolation — a perfect fit for the issue-by-issue, test-first delivery model used in this
+repository.
+
+Core design principles:
+
+- **Event-driven and serverless first** — no servers to manage, pay only for what runs, and
+  scale to zero when idle.
+- **Loose coupling via events** — EventBridge and SNS decouple producers from consumers so
+  stages evolve independently.
+- **Orchestration over choreography for processing** — AWS Step Functions makes the
+  multi-step audio workflow explicit, observable, and resilient.
+- **Secure by default** — least-privilege IAM, encryption at rest and in transit, and private
+  buckets with all public access blocked.
+- **Observable by default** — structured CloudWatch logs, metrics, and alarms on every stage.
+- **Multi-environment** — `dev`, `stage`, and `prod` are selected through CDK context so the
+  same code deploys to every environment.
+
+## 2. Data Flow
+
+The pipeline moves a single upload through the following stages:
+
+1. **Upload** — A user (or upstream client) uploads a raw audio object into the **S3 Ingestion
+   Bucket** under a per-user key prefix (e.g. `raw/{user_id}/{file}`).
+2. **Event detection** — S3 emits an `Object Created` event to **Amazon EventBridge**. An
+   EventBridge rule filters for new ingestion objects and triggers the workflow.
+3. **Orchestration** — The rule starts an **AWS Step Functions** state machine that owns the
+   end-to-end processing workflow.
+4. **Validate & extract metadata** — The first state validates the object (size, format,
+   ownership prefix) and extracts technical metadata (duration, format, sample rate). Invalid
+   inputs short-circuit to the failure path.
+5. **Generate / enhance audio** — The workflow enriches the audio:
+   - **Amazon Polly** synthesizes soothing narration or text-to-speech guidance.
+   - **Amazon Bedrock** *(optional)* generates AI sleep soundscapes or enhances the audio.
+6. **Persist output** — The processed artifact is written to the **S3 Processed Audio Bucket**,
+   which has **versioning enabled** so every reprocessing run is retained.
+7. **Record metadata** — Catalog and processing state (duration, `user_id`, status, input/output
+   keys, timestamps) are written to the **DynamoDB Metadata Table**.
+8. **Notify** — On success or failure the workflow publishes to an **SNS Topic** that fans the
+   outcome out to operators and downstream consumers.
+9. **Observe** — Every stage emits logs, metrics, and alarms to **Amazon CloudWatch**.
+
+### Happy path vs. failure path
+
+- **Success:** validate → enhance → write output (versioned) → record `COMPLETED` in DynamoDB →
+  publish success to SNS.
+- **Failure:** any state error is caught by Step Functions → record `FAILED` (with reason) in
+  DynamoDB → publish failure to SNS for operator follow-up.
+
+## 3. Architecture Diagram
 
 ```mermaid
 flowchart TD
-    A[S3 Ingestion Bucket] -->|Object Created Event| B[Amazon EventBridge]
-    B --> C[Audio Processing Stage Placeholder]
-    C --> D[S3 Processed Audio Bucket]
-    C --> E[DynamoDB Metadata Table]
-    C --> F[SNS Notifications Topic]
+    User([User / Upstream Client])
+
+    subgraph Ingestion
+        S3In[("S3 Ingestion Bucket<br/>(private, SSE, raw/{user_id}/...)")]
+        EB{{"Amazon EventBridge<br/>Object Created Rule"}}
+    end
+
+    subgraph Processing["Processing — AWS Step Functions State Machine"]
+        Validate["Validate & Extract Metadata"]
+        Polly["Amazon Polly<br/>Soothing TTS / Narration"]
+        Bedrock["Amazon Bedrock (optional)<br/>AI Soundscapes / Enhancement"]
+        Persist["Persist Processed Audio"]
+        Catalog["Record Metadata & Status"]
+        Notify["Publish Outcome"]
+    end
+
+    subgraph Storage
+        S3Out[("S3 Processed Audio Bucket<br/>(private, SSE, versioning ON)")]
+        DDB[("DynamoDB Metadata Table<br/>duration, user_id, status")]
+    end
+
+    SNS["SNS Notifications Topic<br/>success / failure fan-out"]
+    Ops([Operators & Downstream Consumers])
+    CW[("Amazon CloudWatch<br/>Logs, Metrics, Alarms")]
+
+    User -->|Upload raw audio| S3In
+    S3In -->|Object Created event| EB
+    EB -->|Start execution| Validate
+    Validate --> Polly
+    Polly --> Bedrock
+    Bedrock --> Persist
+    Validate -.->|skip Bedrock| Persist
+    Persist --> S3Out
+    Persist --> Catalog
+    Catalog --> DDB
+    Catalog --> Notify
+    Notify --> SNS
+    SNS --> Ops
+
+    Validate -.->|on error| Notify
+
+    Processing -.->|logs & metrics| CW
+    S3In -.-> CW
+    S3Out -.-> CW
 ```
+
+The diagram intentionally mirrors the staged data flow in Section 2: ingestion and event
+detection feed the Step Functions workflow, which performs validation, Polly/Bedrock enrichment,
+versioned output storage, DynamoDB cataloguing, and SNS notification, with CloudWatch observing
+every stage and the failure path routing errors straight to notification.
+
+## 4. Key AWS Services and Rationale
+
+| Service | Role in the pipeline | Why it was chosen |
+| --- | --- | --- |
+| **Amazon S3** | Ingestion bucket for raw uploads and processed bucket for outputs | Durable, cheap object storage; native event integration; versioning protects against accidental overwrites and supports reprocessing. |
+| **Amazon EventBridge** | Detects S3 object-created events and triggers the workflow | Decouples ingestion from processing; rich content-based filtering; easy to add future consumers without touching producers. |
+| **AWS Step Functions** | Orchestrates the multi-step processing workflow | Explicit, visual state machine with built-in retries, error handling, and per-state observability — superior to a tangle of Lambda calls. |
+| **Amazon Polly** | Generates soothing narration / text-to-speech | Managed, high-quality neural TTS with no model hosting to operate. |
+| **Amazon Bedrock** *(optional)* | AI-generated sleep soundscapes or audio enhancement | Access to foundation models without managing infrastructure; gated behind context so it is opt-in per environment. |
+| **Amazon DynamoDB** | Stores processing state and catalog metadata | Serverless, single-digit-millisecond key-value access that scales to zero; a natural fit for per-object status records. |
+| **Amazon SNS** | Fans out success/failure notifications | Simple pub/sub decoupling so operators and downstream systems subscribe independently. |
+| **Amazon CloudWatch** | Centralized logs, metrics, and alarms | First-class, built-in observability for every managed service in the pipeline. |
+| **AWS IAM** | Least-privilege roles for every component | Enforces the principle of least privilege across the workflow. |
+
+## 5. Security
+
+- **Private buckets** — Both S3 buckets block all public access and are only reachable through
+  IAM-scoped roles.
+- **Encryption at rest** — S3 objects and the DynamoDB table are encrypted (SSE / KMS); SNS
+  topics use encryption at rest.
+- **Encryption in transit** — All service-to-service traffic uses TLS; buckets enforce
+  `aws:SecureTransport`.
+- **Least-privilege IAM** — Each stage gets a narrowly scoped role: the workflow may read the
+  ingestion bucket and write only the processed bucket, update only the metadata table, and
+  publish only to the notifications topic.
+- **Versioning as a safety net** — The processed bucket retains prior versions to guard against
+  accidental or malicious overwrites.
+
+## 6. Observability
+
+- **Structured logging** — Every stage writes structured CloudWatch logs keyed by `user_id` and
+  object key for traceability.
+- **Metrics** — Step Functions execution metrics, S3 request metrics, and DynamoDB
+  capacity/throttle metrics are tracked per environment.
+- **Alarms** — Basic CloudWatch alarms cover workflow failures, dead-letter / error rates, and
+  notification-publish failures, routed to the SNS topic for operator awareness.
+- **Traceability** — The DynamoDB record plus correlated logs make it possible to reconstruct the
+  full lifecycle of any single upload.
+
+## 7. Cost Considerations
+
+- **Scale-to-zero, pay-per-use** — S3, EventBridge, Step Functions, DynamoDB (on-demand), Polly,
+  Bedrock, and SNS bill only for actual usage, so idle environments cost close to nothing.
+- **Optional Bedrock** — The most expensive component is opt-in via CDK context and disabled by
+  default in lower environments.
+- **Lifecycle policies** — Future lifecycle rules can transition or expire old raw uploads and
+  non-current processed versions to control storage growth.
+- **Right-sized environments** — `dev` and `stage` can run with reduced alarms/retention while
+  `prod` uses the full configuration.
+
+## 8. Multi-Environment Support
+
+Environments (`dev`, `stage`, `prod`) are selected through **CDK context** (for example
+`cdk synth -c env=dev`). The same stack code deploys to every environment, with per-environment
+values (resource names, alarm thresholds, retention, and whether Bedrock is enabled) resolved
+from context. This keeps environments consistent while allowing safe, isolated promotion of
+changes.
+
+## 9. Future Extensibility
+
+- **Additional enrichment stages** — New processing steps (noise reduction, loudness
+  normalization, transcription) slot into the Step Functions workflow without disrupting others.
+- **More event consumers** — EventBridge and SNS allow new downstream consumers (analytics,
+  search indexing) to subscribe without changing producers.
+- **API surface** — A future API Gateway + Lambda layer can expose upload URLs and status
+  queries backed by the existing DynamoDB catalog.
+- **Content delivery** — Processed audio can be fronted by CloudFront for low-latency playback.
+- **Workflow analytics** — DynamoDB Streams can feed downstream analytics or aggregation
+  pipelines as the catalog grows.
+
+---
+
+This architecture is implemented incrementally, one issue at a time, under strict TDD. The next
+issue introduces the foundational resources: **Core S3 Buckets + EventBridge Rule**.

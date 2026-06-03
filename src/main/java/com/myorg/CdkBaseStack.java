@@ -24,6 +24,12 @@ import java.util.List;
 import java.util.Map;
 
 public class CdkBaseStack extends Stack {
+    // Placeholder values for initial Polly integration (Issue #4)
+    // These will be replaced with dynamic input from S3 events in future issues
+    private static final String PLACEHOLDER_POLLY_TEXT = "Placeholder text for sleep audio narration";
+    private static final String POLLY_VOICE_ID = "Joanna";
+    private static final String POLLY_OUTPUT_FORMAT = "mp3";
+    
     public CdkBaseStack(final Construct scope, final String id) {
         this(scope, id, null);
     }
@@ -56,16 +62,18 @@ public class CdkBaseStack extends Stack {
 
         // Polly Task - Minimal integration using CallAwsService
         // This is a placeholder that will invoke Polly StartSpeechSynthesisTask
+        // NOTE: iamResources uses wildcard for initial development (Issue #4)
+        // TODO: Scope to specific resources before production (e.g., output bucket ARN, specific Polly task ARNs)
         CallAwsService pollyTask = CallAwsService.Builder.create(this, "PollyTask")
                 .service("polly")
                 .action("startSpeechSynthesisTask")
                 .parameters(Map.of(
-                    "Text", "Placeholder text for sleep audio narration",
-                    "OutputFormat", "mp3",
-                    "VoiceId", "Joanna",
+                    "Text", PLACEHOLDER_POLLY_TEXT,
+                    "OutputFormat", POLLY_OUTPUT_FORMAT,
+                    "VoiceId", POLLY_VOICE_ID,
                     "OutputS3BucketName", outputBucket.getBucketName()
                 ))
-                .iamResources(List.of("*"))
+                .iamResources(List.of("*"))  // Broad permissions for development; narrow before production
                 .resultPath("$.pollyResult")
                 .build();
 

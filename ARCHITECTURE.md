@@ -1,9 +1,10 @@
 # Architecture
 
-> **Status:** Partial Implementation (Issue #3 complete). The core S3 buckets and EventBridge
-> rule are now implemented. This document is the **single source of truth** for the Event-Driven
-> Sleep Audio Pipeline. Every subsequent issue must keep this file — and its Mermaid diagram — in
-> sync with the implementation under strict TDD.
+> **Status:** Partial Implementation (Issue #4 complete). The core S3 buckets, EventBridge
+> rule, Step Functions state machine skeleton, and Polly integration are now implemented. This 
+> document is the **single source of truth** for the Event-Driven Sleep Audio Pipeline. Every 
+> subsequent issue must keep this file — and its Mermaid diagram — in sync with the 
+> implementation under strict TDD.
 
 ## 1. High-Level Overview
 
@@ -74,50 +75,51 @@ flowchart TD
     end
 
     subgraph Processing["Processing — AWS Step Functions State Machine"]
-        Validate["Validate & Extract Metadata"]
-        Polly["Amazon Polly<br/>Soothing TTS / Narration"]
-        Bedrock["Amazon Bedrock (optional)<br/>AI Soundscapes / Enhancement"]
-        Persist["Persist Processed Audio"]
-        Catalog["Record Metadata & Status"]
-        Notify["Publish Outcome"]
+        direction LR
+        Polly["Amazon Polly Task<br/>startSpeechSynthesisTask"]
+        Success["Success State"]
+        Polly --> Success
+        
+        %% Future states (not yet implemented)
+        Validate["Validate & Extract Metadata<br/>(Future)"]
+        Bedrock["Amazon Bedrock (optional)<br/>AI Soundscapes / Enhancement<br/>(Future)"]
+        Persist["Persist Processed Audio<br/>(Future)"]
+        Catalog["Record Metadata & Status<br/>(Future)"]
+        Notify["Publish Outcome<br/>(Future)"]
+        
+        style Validate stroke-dasharray: 5 5
+        style Bedrock stroke-dasharray: 5 5
+        style Persist stroke-dasharray: 5 5
+        style Catalog stroke-dasharray: 5 5
+        style Notify stroke-dasharray: 5 5
     end
 
     subgraph Storage
         S3Out[("S3 Processed Audio Bucket<br/>(private, SSE, versioning ON)")]
-        DDB[("DynamoDB Metadata Table<br/>duration, user_id, status")]
+        DDB[("DynamoDB Metadata Table<br/>duration, user_id, status<br/>(Future)")]
+        style DDB stroke-dasharray: 5 5
     end
 
-    SNS["SNS Notifications Topic<br/>success / failure fan-out"]
+    SNS["SNS Notifications Topic<br/>success / failure fan-out<br/>(Future)"]
+    style SNS stroke-dasharray: 5 5
     Ops([Operators & Downstream Consumers])
     CW[("Amazon CloudWatch<br/>Logs, Metrics, Alarms")]
 
     User -->|Upload raw audio| S3In
     S3In -->|Object Created event| EB
-    EB -->|Start execution| Validate
-    Validate --> Polly
-    Polly --> Bedrock
-    Bedrock --> Persist
-    Validate -.->|skip Bedrock| Persist
-    Persist --> S3Out
-    Persist --> Catalog
-    Catalog --> DDB
-    Catalog --> Notify
-    Notify --> SNS
-    SNS --> Ops
-
-    Validate -.->|on error| Notify
+    EB -->|Start execution| Polly
 
     Processing -.->|logs & metrics| CW
     S3In -.-> CW
     S3Out -.-> CW
 ```
 
-The diagram intentionally mirrors the staged data flow in Section 2: ingestion and event
-detection feed the Step Functions workflow, which performs validation, Polly/Bedrock enrichment,
-versioned output storage, DynamoDB cataloguing, and SNS notification, with CloudWatch observing
-every stage and the failure path routing errors straight to notification.
+The diagram reflects the current implementation (Issue #4): ingestion and event detection feed 
+the Step Functions state machine, which currently contains a minimal Polly task followed by a 
+success state. Future states (validation, Bedrock enhancement, persistence, cataloguing, and 
+notification) are shown with dashed borders to indicate the planned architecture.
 
-## 3.1. Implemented Components (Issue #3)
+## 3.1. Implemented Components (Issues #3 and #4)
 
 The following foundational resources are now implemented:
 
@@ -139,11 +141,34 @@ The following foundational resources are now implemented:
 - **Source**: `aws.s3`
 - **Detail Type**: `Object Created`
 - **State**: ENABLED
-- **Target**: Placeholder SQS queue (will be replaced with Step Functions State Machine in Issue #4)
+- **Target**: Step Functions State Machine (triggers workflow execution)
 
-These resources establish the ingestion and event detection foundation for the pipeline. The
-placeholder SQS queue serves as a temporary target until the Step Functions workflow is
-implemented in the next issue.
+### Step Functions State Machine (`SleepAudioPipelineStateMachine`)
+- **Type**: STANDARD (supports all Step Functions features including long-running workflows)
+- **State Machine Name**: `SleepAudioPipelineStateMachine`
+- **Logging**: CloudWatch Logs enabled with ALL level logging and execution data included
+- **IAM Role**: Automatically created with least-privilege permissions
+- **Definition**: Minimal skeleton with Polly integration
+  - **Polly Task State**: Invokes `polly:startSpeechSynthesisTask` with placeholder parameters
+    - Text: Placeholder narration text
+    - Voice: Joanna (neural voice)
+    - Output Format: MP3
+    - Output Location: SleepAudioOutputBucket
+  - **Success State**: Terminal success state
+- **Permissions**: IAM policy grants access to:
+  - CloudWatch Logs (for state machine execution logging)
+  - Amazon Polly (startSpeechSynthesisTask action)
+  - S3 Output Bucket (write permissions for Polly output)
+
+### CloudWatch Log Group (`StateMachineLogGroup`)
+- **Retention**: 1 week (suitable for development and debugging)
+- **Purpose**: Captures all Step Functions execution logs for observability
+- **Removal Policy**: DESTROY (logs are not critical for redeployment)
+
+These resources establish the complete event-driven orchestration foundation for the pipeline. The
+Step Functions state machine provides a skeleton workflow that can be extended with additional
+processing states in future issues. The Polly integration demonstrates the pattern for adding
+AWS service integrations using the `CallAwsService` construct.
 
 ## 4. Key AWS Services and Rationale
 

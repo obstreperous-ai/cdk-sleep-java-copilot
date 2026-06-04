@@ -39,6 +39,14 @@ public class CdkBaseStack extends Stack {
     private static final String POLLY_VOICE_ID = "Joanna";
     private static final String POLLY_OUTPUT_FORMAT = "mp3";
     
+    // DynamoDB metadata status values (Issue #5)
+    private static final String STATUS_PROCESSING = "PROCESSING";
+    
+    // JsonPath expressions for S3 event data (Issue #5)
+    private static final String JSONPATH_OBJECT_KEY = "$.detail.object.key";
+    private static final String JSONPATH_BUCKET_NAME = "$.detail.bucket.name";
+    private static final String JSONPATH_EVENT_TIME = "$.time";
+    
     public CdkBaseStack(final Construct scope, final String id) {
         this(scope, id, null);
     }
@@ -86,11 +94,11 @@ public class CdkBaseStack extends Stack {
         DynamoPutItem putMetadataTask = DynamoPutItem.Builder.create(this, "PutMetadataTask")
                 .table(metadataTable)
                 .item(Map.of(
-                    "audioId", DynamoAttributeValue.fromString("$.detail.object.key"),
-                    "status", DynamoAttributeValue.fromString("PROCESSING"),
-                    "inputBucket", DynamoAttributeValue.fromString("$.detail.bucket.name"),
-                    "inputKey", DynamoAttributeValue.fromString("$.detail.object.key"),
-                    "createdAt", DynamoAttributeValue.fromString("$.time")
+                    "audioId", DynamoAttributeValue.fromString(JSONPATH_OBJECT_KEY),
+                    "status", DynamoAttributeValue.fromString(STATUS_PROCESSING),
+                    "inputBucket", DynamoAttributeValue.fromString(JSONPATH_BUCKET_NAME),
+                    "inputKey", DynamoAttributeValue.fromString(JSONPATH_OBJECT_KEY),
+                    "createdAt", DynamoAttributeValue.fromString(JSONPATH_EVENT_TIME)
                 ))
                 .resultPath("$.dynamoResult")
                 .build();

@@ -1,10 +1,10 @@
 # Architecture
 
-> **Status:** Partial Implementation (Issue #4 complete). The core S3 buckets, EventBridge
-> rule, Step Functions state machine skeleton, and Polly integration are now implemented. This 
-> document is the **single source of truth** for the Event-Driven Sleep Audio Pipeline. Every 
-> subsequent issue must keep this file — and its Mermaid diagram — in sync with the 
-> implementation under strict TDD.
+> **Status:** Partial Implementation (Issue #5 complete). The core S3 buckets, EventBridge
+> rule, Step Functions state machine skeleton with DynamoDB metadata integration, and Polly
+> integration are now implemented. This document is the **single source of truth** for the
+> Event-Driven Sleep Audio Pipeline. Every subsequent issue must keep this file — and its
+> Mermaid diagram — in sync with the implementation under strict TDD.
 
 ## 1. High-Level Overview
 
@@ -71,33 +71,34 @@ flowchart TD
 
     subgraph Ingestion
         S3In[("S3 Ingestion Bucket<br/>(private, SSE, raw/{user_id}/...)")]
-        EB{{"Amazon EventBridge<br/>Object Created Rule"}}
+        EB{{"Amazon EventBridge<br/>Object Created Rule<br/>+ Input Transformer"}}
     end
 
     subgraph Processing["Processing — AWS Step Functions State Machine"]
         direction LR
+        PutMetadata["DynamoDB PutItem Task<br/>Write Initial Metadata<br/>(status=PROCESSING)"]
         Polly["Amazon Polly Task<br/>startSpeechSynthesisTask"]
         Success["Success State"]
+        PutMetadata --> Polly
         Polly --> Success
         
         %% Future states (not yet implemented)
         Validate["Validate & Extract Metadata<br/>(Future)"]
         Bedrock["Amazon Bedrock (optional)<br/>AI Soundscapes / Enhancement<br/>(Future)"]
         Persist["Persist Processed Audio<br/>(Future)"]
-        Catalog["Record Metadata & Status<br/>(Future)"]
+        UpdateStatus["Update Status to COMPLETED<br/>(Future)"]
         Notify["Publish Outcome<br/>(Future)"]
         
         style Validate stroke-dasharray: 5 5
         style Bedrock stroke-dasharray: 5 5
         style Persist stroke-dasharray: 5 5
-        style Catalog stroke-dasharray: 5 5
+        style UpdateStatus stroke-dasharray: 5 5
         style Notify stroke-dasharray: 5 5
     end
 
     subgraph Storage
         S3Out[("S3 Processed Audio Bucket<br/>(private, SSE, versioning ON)")]
-        DDB[("DynamoDB Metadata Table<br/>duration, user_id, status<br/>(Future)")]
-        style DDB stroke-dasharray: 5 5
+        DDB[("DynamoDB Metadata Table<br/>audioId (PK), status, inputBucket,<br/>inputKey, createdAt")]
     end
 
     SNS["SNS Notifications Topic<br/>success / failure fan-out<br/>(Future)"]
@@ -107,19 +108,24 @@ flowchart TD
 
     User -->|Upload raw audio| S3In
     S3In -->|Object Created event| EB
-    EB -->|Start execution| Polly
+    EB -->|Start execution<br/>with S3 event data| PutMetadata
+    PutMetadata -->|Write metadata| DDB
+    Polly -->|Write audio| S3Out
 
     Processing -.->|logs & metrics| CW
     S3In -.-> CW
     S3Out -.-> CW
+    DDB -.-> CW
 ```
 
-The diagram reflects the current implementation (Issue #4): ingestion and event detection feed 
-the Step Functions state machine, which currently contains a minimal Polly task followed by a 
-success state. Future states (validation, Bedrock enhancement, persistence, cataloguing, and 
-notification) are shown with dashed borders to indicate the planned architecture.
+The diagram reflects the current implementation (Issue #5): ingestion and event detection feed 
+the Step Functions state machine with transformed S3 event data. The state machine now writes 
+initial metadata to DynamoDB, processes audio with Polly, and completes successfully. The 
+DynamoDB table is now implemented with proper schema and configuration. Future states 
+(validation, Bedrock enhancement, persistence, status updates, and notification) are shown 
+with dashed borders to indicate the planned architecture.
 
-## 3.1. Implemented Components (Issues #3 and #4)
+## 3.1. Implemented Components (Issues #3, #4, and #5)
 
 The following foundational resources are now implemented:
 
@@ -142,13 +148,23 @@ The following foundational resources are now implemented:
 - **Detail Type**: `Object Created`
 - **State**: ENABLED
 - **Target**: Step Functions State Machine (triggers workflow execution)
+- **Input Transformation** (Issue #5): Transforms S3 event data to pass relevant fields to state machine:
+  - Extracts `detail.bucket.name` (input bucket name)
+  - Extracts `detail.object.key` (S3 object key)
+  - Extracts `time` (event timestamp)
+  - Maps to state machine input for use in downstream tasks
 
 ### Step Functions State Machine (`SleepAudioPipelineStateMachine`)
 - **Type**: STANDARD (supports all Step Functions features including long-running workflows)
 - **State Machine Name**: `SleepAudioPipelineStateMachine`
 - **Logging**: CloudWatch Logs enabled with ALL level logging and execution data included
 - **IAM Role**: Automatically created with least-privilege permissions
-- **Definition**: Minimal skeleton with Polly integration
+- **Definition**: Extended workflow with DynamoDB metadata integration (Issue #5)
+  - **DynamoDB PutItem Task State** (Issue #5): Writes initial metadata record at pipeline start
+    - Table: SleepAudioMetadataTable
+    - Attributes: `audioId` (from S3 object key), `status` (PROCESSING), `inputBucket`, `inputKey`, `createdAt`
+    - Uses JsonPath expressions to extract values from EventBridge input
+    - Result stored at `$.dynamoResult` path
   - **Polly Task State**: Invokes `polly:startSpeechSynthesisTask` with placeholder parameters
     - Text: Placeholder narration text
     - Voice: Joanna (neural voice)
@@ -157,6 +173,7 @@ The following foundational resources are now implemented:
   - **Success State**: Terminal success state
 - **Permissions**: IAM policy grants access to:
   - CloudWatch Logs (for state machine execution logging)
+  - DynamoDB Table (PutItem permission for metadata writes) — Issue #5
   - Amazon Polly (startSpeechSynthesisTask action)
   - S3 Output Bucket (write permissions for Polly output)
 
@@ -165,10 +182,25 @@ The following foundational resources are now implemented:
 - **Purpose**: Captures all Step Functions execution logs for observability
 - **Removal Policy**: DESTROY (logs are not critical for redeployment)
 
-These resources establish the complete event-driven orchestration foundation for the pipeline. The
-Step Functions state machine provides a skeleton workflow that can be extended with additional
-processing states in future issues. The Polly integration demonstrates the pattern for adding
-AWS service integrations using the `CallAwsService` construct.
+### DynamoDB Metadata Table (`SleepAudioMetadataTable`) — Issue #5
+- **Partition Key**: `audioId` (String) — uniquely identifies each audio file (typically S3 object key)
+- **Billing Mode**: PAY_PER_REQUEST (on-demand) for cost efficiency and zero-scaling
+- **Encryption**: AWS-managed encryption at rest for security
+- **Point-in-Time Recovery**: Enabled for data protection and recovery capability
+- **Removal Policy**: RETAIN to prevent accidental data loss
+- **Attributes** (stored in item):
+  - `audioId`: Unique identifier (S3 object key)
+  - `status`: Current processing status (PROCESSING, COMPLETED, FAILED)
+  - `inputBucket`: S3 bucket name where the raw audio was uploaded
+  - `inputKey`: S3 object key of the raw audio
+  - `createdAt`: Timestamp when the pipeline started processing
+  - Future attributes: `updatedAt`, `outputKey`, `duration`, `errorMessage`, etc.
+
+These resources establish the complete event-driven orchestration foundation with metadata 
+tracking for the pipeline. The Step Functions state machine now writes initial metadata to 
+DynamoDB before processing, providing visibility into pipeline execution state. The DynamoDB 
+table uses a simple partition-key-only schema suitable for tracking individual audio processing 
+jobs. Future issues will add status updates and additional metadata as the workflow evolves.
 
 ## 4. Key AWS Services and Rationale
 

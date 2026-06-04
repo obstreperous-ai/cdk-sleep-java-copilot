@@ -10,18 +10,27 @@ import software.amazon.awscdk.services.s3.BlockPublicAccess;
 import software.amazon.awscdk.services.events.Rule;
 import software.amazon.awscdk.services.events.EventPattern;
 import software.amazon.awscdk.services.events.targets.SfnStateMachine;
+import software.amazon.awscdk.services.events.RuleTargetInput;
 import software.amazon.awscdk.services.stepfunctions.StateMachine;
 import software.amazon.awscdk.services.stepfunctions.StateMachineType;
 import software.amazon.awscdk.services.stepfunctions.LogLevel;
 import software.amazon.awscdk.services.stepfunctions.LogOptions;
 import software.amazon.awscdk.services.stepfunctions.tasks.CallAwsService;
+import software.amazon.awscdk.services.stepfunctions.tasks.DynamoPutItem;
+import software.amazon.awscdk.services.stepfunctions.tasks.DynamoAttributeValue;
 import software.amazon.awscdk.services.stepfunctions.Pass;
 import software.amazon.awscdk.services.stepfunctions.Succeed;
 import software.amazon.awscdk.services.logs.LogGroup;
 import software.amazon.awscdk.services.logs.RetentionDays;
+import software.amazon.awscdk.services.dynamodb.Table;
+import software.amazon.awscdk.services.dynamodb.Attribute;
+import software.amazon.awscdk.services.dynamodb.AttributeType;
+import software.amazon.awscdk.services.dynamodb.BillingMode;
+import software.amazon.awscdk.services.dynamodb.TableEncryption;
 
 import java.util.List;
 import java.util.Map;
+import java.util.HashMap;
 
 public class CdkBaseStack extends Stack {
     // Placeholder values for initial Polly integration (Issue #4)
@@ -54,10 +63,36 @@ public class CdkBaseStack extends Stack {
                 .removalPolicy(RemovalPolicy.RETAIN)
                 .build();
 
+        // DynamoDB Table - for audio pipeline metadata (Issue #5)
+        Table metadataTable = Table.Builder.create(this, "SleepAudioMetadataTable")
+                .partitionKey(Attribute.builder()
+                        .name("audioId")
+                        .type(AttributeType.STRING)
+                        .build())
+                .billingMode(BillingMode.PAY_PER_REQUEST)
+                .encryption(TableEncryption.AWS_MANAGED)
+                .pointInTimeRecovery(true)  // Deprecated but works; will migrate in future
+                .removalPolicy(RemovalPolicy.RETAIN)
+                .build();
+
         // CloudWatch Log Group for Step Functions state machine
         LogGroup stateMachineLogGroup = LogGroup.Builder.create(this, "StateMachineLogGroup")
                 .retention(RetentionDays.ONE_WEEK)
                 .removalPolicy(RemovalPolicy.DESTROY)
+                .build();
+
+        // DynamoDB PutItem Task - Write initial metadata record (Issue #5)
+        // This writes the initial record when the pipeline starts
+        DynamoPutItem putMetadataTask = DynamoPutItem.Builder.create(this, "PutMetadataTask")
+                .table(metadataTable)
+                .item(Map.of(
+                    "audioId", DynamoAttributeValue.fromString("$.detail.object.key"),
+                    "status", DynamoAttributeValue.fromString("PROCESSING"),
+                    "inputBucket", DynamoAttributeValue.fromString("$.detail.bucket.name"),
+                    "inputKey", DynamoAttributeValue.fromString("$.detail.object.key"),
+                    "createdAt", DynamoAttributeValue.fromString("$.time")
+                ))
+                .resultPath("$.dynamoResult")
                 .build();
 
         // Polly Task - Minimal integration using CallAwsService
@@ -82,14 +117,14 @@ public class CdkBaseStack extends Stack {
                 .comment("Processing completed successfully")
                 .build();
 
-        // Chain the states: Polly Task -> Success
-        pollyTask.next(successState);
+        // Chain the states: PutMetadata -> Polly Task -> Success (Issue #5)
+        putMetadataTask.next(pollyTask).next(successState);
 
         // Step Functions State Machine
         StateMachine stateMachine = StateMachine.Builder.create(this, "SleepAudioPipelineStateMachine")
                 .stateMachineName("SleepAudioPipelineStateMachine")
                 .stateMachineType(StateMachineType.STANDARD)
-                .definitionBody(software.amazon.awscdk.services.stepfunctions.DefinitionBody.fromChainable(pollyTask))
+                .definitionBody(software.amazon.awscdk.services.stepfunctions.DefinitionBody.fromChainable(putMetadataTask))
                 .logs(LogOptions.builder()
                         .destination(stateMachineLogGroup)
                         .level(LogLevel.ALL)
@@ -99,6 +134,9 @@ public class CdkBaseStack extends Stack {
 
         // Grant the state machine permissions to write to the output bucket
         outputBucket.grantWrite(stateMachine);
+
+        // Grant the state machine permissions to write to DynamoDB table (Issue #5)
+        metadataTable.grantWriteData(stateMachine);
 
         // EventBridge Rule - triggers on S3 Object Created events from input bucket
         Rule eventRule = Rule.Builder.create(this, "S3ObjectCreatedRule")
@@ -113,7 +151,20 @@ public class CdkBaseStack extends Stack {
                         .build())
                 .build();
 
-        // Add Step Functions state machine as target
-        eventRule.addTarget(SfnStateMachine.Builder.create(stateMachine).build());
+        // Add Step Functions state machine as target with input transformation (Issue #5)
+        // Transform S3 event to pass relevant data to state machine
+        eventRule.addTarget(SfnStateMachine.Builder.create(stateMachine)
+                .input(RuleTargetInput.fromObject(Map.of(
+                    "detail", Map.of(
+                        "bucket", Map.of(
+                            "name", software.amazon.awscdk.services.events.EventField.fromPath("$.detail.bucket.name")
+                        ),
+                        "object", Map.of(
+                            "key", software.amazon.awscdk.services.events.EventField.fromPath("$.detail.object.key")
+                        )
+                    ),
+                    "time", software.amazon.awscdk.services.events.EventField.fromPath("$.time")
+                )))
+                .build());
     }
 }

@@ -211,4 +211,120 @@ class CdkBaseTest {
         // Verify no SQS queue exists (placeholder removed)
         assertEquals(0, template.findResources("AWS::SQS::Queue").size());
     }
+
+    // ===== Issue #5: DynamoDB Metadata Table Tests =====
+
+    @Test
+    void createsDynamoDBMetadataTable() {
+        Template template = getTestTemplate();
+        
+        // Verify DynamoDB table exists
+        assertEquals(1, template.findResources("AWS::DynamoDB::Table").size());
+    }
+
+    @Test
+    void dynamoDBTableHasCorrectKeySchema() {
+        Template template = getTestTemplate();
+        
+        // Verify DynamoDB table has audioId as partition key
+        template.hasResourceProperties("AWS::DynamoDB::Table", Match.objectLike(Map.of(
+            "KeySchema", Match.arrayWith(List.of(
+                Match.objectLike(Map.of(
+                    "AttributeName", "audioId",
+                    "KeyType", "HASH"
+                ))
+            )),
+            "AttributeDefinitions", Match.arrayWith(List.of(
+                Match.objectLike(Map.of(
+                    "AttributeName", "audioId",
+                    "AttributeType", "S"
+                ))
+            ))
+        )));
+    }
+
+    @Test
+    void dynamoDBTableHasEncryptionEnabled() {
+        Template template = getTestTemplate();
+        
+        // Verify DynamoDB table has server-side encryption enabled
+        template.hasResourceProperties("AWS::DynamoDB::Table", Match.objectLike(Map.of(
+            "SSESpecification", Match.objectLike(Map.of(
+                "SSEEnabled", true
+            ))
+        )));
+    }
+
+    @Test
+    void dynamoDBTableUsesOnDemandBilling() {
+        Template template = getTestTemplate();
+        
+        // Verify DynamoDB table uses on-demand billing mode
+        template.hasResourceProperties("AWS::DynamoDB::Table", Match.objectLike(Map.of(
+            "BillingMode", "PAY_PER_REQUEST"
+        )));
+    }
+
+    @Test
+    void dynamoDBTableHasPointInTimeRecovery() {
+        Template template = getTestTemplate();
+        
+        // Verify DynamoDB table has point-in-time recovery enabled
+        template.hasResourceProperties("AWS::DynamoDB::Table", Match.objectLike(Map.of(
+            "PointInTimeRecoverySpecification", Match.objectLike(Map.of(
+                "PointInTimeRecoveryEnabled", true
+            ))
+        )));
+    }
+
+    // ===== Issue #5: State Machine DynamoDB Integration Tests =====
+
+    @Test
+    void stateMachineDefinitionContainsDynamoDBPutItemTask() {
+        Template template = getTestTemplate();
+        
+        // Verify the state machine has an IAM policy that allows DynamoDB PutItem
+        template.hasResourceProperties("AWS::IAM::Policy", Match.objectLike(Map.of(
+            "PolicyDocument", Match.objectLike(Map.of(
+                "Statement", Match.arrayWith(List.of(
+                    Match.objectLike(Map.of(
+                        "Action", "dynamodb:PutItem",
+                        "Effect", "Allow"
+                    ))
+                ))
+            ))
+        )));
+    }
+
+    @Test
+    void stateMachineHasPermissionToAccessDynamoDBTable() {
+        Template template = getTestTemplate();
+        
+        // Verify state machine execution role has DynamoDB permissions
+        template.hasResourceProperties("AWS::IAM::Policy", Match.objectLike(Map.of(
+            "PolicyDocument", Match.objectLike(Map.of(
+                "Statement", Match.arrayWith(List.of(
+                    Match.objectLike(Map.of(
+                        "Action", "dynamodb:PutItem",
+                        "Effect", "Allow",
+                        "Resource", Match.anyValue()
+                    ))
+                ))
+            ))
+        )));
+    }
+
+    @Test
+    void eventBridgeRuleTransformsS3EventInput() {
+        Template template = getTestTemplate();
+        
+        // Verify EventBridge Rule has an input transformer
+        template.hasResourceProperties("AWS::Events::Rule", Match.objectLike(Map.of(
+            "Targets", Match.arrayWith(List.of(
+                Match.objectLike(Map.of(
+                    "InputTransformer", Match.anyValue()
+                ))
+            ))
+        )));
+    }
 }

@@ -20,6 +20,12 @@ import software.amazon.awscdk.services.stepfunctions.tasks.DynamoPutItem;
 import software.amazon.awscdk.services.stepfunctions.tasks.DynamoAttributeValue;
 import software.amazon.awscdk.services.stepfunctions.Pass;
 import software.amazon.awscdk.services.stepfunctions.Succeed;
+import software.amazon.awscdk.services.stepfunctions.Fail;
+import software.amazon.awscdk.services.stepfunctions.Errors;
+import software.amazon.awscdk.services.stepfunctions.CatchProps;
+import software.amazon.awscdk.services.stepfunctions.tasks.SnsPublish;
+import software.amazon.awscdk.services.stepfunctions.tasks.DynamoUpdateItem;
+import software.amazon.awscdk.services.stepfunctions.TaskInput;
 import software.amazon.awscdk.services.logs.LogGroup;
 import software.amazon.awscdk.services.logs.RetentionDays;
 import software.amazon.awscdk.services.dynamodb.Table;
@@ -27,6 +33,8 @@ import software.amazon.awscdk.services.dynamodb.Attribute;
 import software.amazon.awscdk.services.dynamodb.AttributeType;
 import software.amazon.awscdk.services.dynamodb.BillingMode;
 import software.amazon.awscdk.services.dynamodb.TableEncryption;
+import software.amazon.awscdk.services.sns.Topic;
+import software.amazon.awscdk.services.kms.Key;
 
 import java.util.List;
 import java.util.Map;
@@ -39,8 +47,10 @@ public class CdkBaseStack extends Stack {
     private static final String POLLY_VOICE_ID = "Joanna";
     private static final String POLLY_OUTPUT_FORMAT = "mp3";
     
-    // DynamoDB metadata status values (Issue #5)
+    // DynamoDB metadata status values (Issue #5 and #6)
     private static final String STATUS_PROCESSING = "PROCESSING";
+    private static final String STATUS_COMPLETED = "COMPLETED";
+    private static final String STATUS_FAILED = "FAILED";
     
     // JsonPath expressions for S3 event data (Issue #5)
     private static final String JSONPATH_OBJECT_KEY = "$.detail.object.key";
@@ -83,6 +93,24 @@ public class CdkBaseStack extends Stack {
                 .removalPolicy(RemovalPolicy.RETAIN)
                 .build();
 
+        // KMS Key for SNS Topic Encryption (Issue #6)
+        Key snsEncryptionKey = Key.Builder.create(this, "SnsEncryptionKey")
+                .description("KMS key for SNS topic encryption")
+                .enableKeyRotation(true)
+                .removalPolicy(RemovalPolicy.DESTROY)
+                .build();
+
+        // SNS Topics for Pipeline Notifications (Issue #6)
+        Topic completedTopic = Topic.Builder.create(this, "SleepAudioPipelineCompletedTopic")
+                .displayName("Sleep Audio Pipeline Completed")
+                .masterKey(snsEncryptionKey)
+                .build();
+
+        Topic failedTopic = Topic.Builder.create(this, "SleepAudioPipelineFailedTopic")
+                .displayName("Sleep Audio Pipeline Failed")
+                .masterKey(snsEncryptionKey)
+                .build();
+
         // CloudWatch Log Group for Step Functions state machine
         LogGroup stateMachineLogGroup = LogGroup.Builder.create(this, "StateMachineLogGroup")
                 .retention(RetentionDays.ONE_WEEK)
@@ -120,13 +148,95 @@ public class CdkBaseStack extends Stack {
                 .resultPath("$.pollyResult")
                 .build();
 
+        // DynamoDB UpdateItem Task - Update status to COMPLETED (Issue #6)
+        DynamoUpdateItem updateStatusToCompleted = DynamoUpdateItem.Builder.create(this, "UpdateStatusToCompleted")
+                .table(metadataTable)
+                .key(Map.of(
+                    "audioId", DynamoAttributeValue.fromString(JSONPATH_OBJECT_KEY)
+                ))
+                .updateExpression("SET #status = :completed, #updatedAt = :updatedAt")
+                .expressionAttributeNames(Map.of(
+                    "#status", "status",
+                    "#updatedAt", "updatedAt"
+                ))
+                .expressionAttributeValues(Map.of(
+                    ":completed", DynamoAttributeValue.fromString(STATUS_COMPLETED),
+                    ":updatedAt", DynamoAttributeValue.fromString("$$.State.EnteredTime")
+                ))
+                .resultPath("$.updateResult")
+                .build();
+
+        // SNS Publish Task - Send success notification (Issue #6)
+        SnsPublish publishSuccessNotification = SnsPublish.Builder.create(this, "PublishSuccessNotification")
+                .topic(completedTopic)
+                .message(TaskInput.fromObject(Map.of(
+                    "status", "COMPLETED",
+                    "audioId", TaskInput.fromJsonPathAt(JSONPATH_OBJECT_KEY),
+                    "message", "Sleep audio pipeline completed successfully",
+                    "timestamp", TaskInput.fromJsonPathAt("$$.State.EnteredTime")
+                )))
+                .subject("Sleep Audio Pipeline - Processing Completed")
+                .resultPath("$.snsResult")
+                .build();
+
         // Success state
         Succeed successState = Succeed.Builder.create(this, "Success")
                 .comment("Processing completed successfully")
                 .build();
 
-        // Chain the states: PutMetadata -> Polly Task -> Success (Issue #5)
-        putMetadataTask.next(pollyTask).next(successState);
+        // DynamoDB UpdateItem Task - Update status to FAILED (Issue #6)
+        DynamoUpdateItem updateStatusToFailed = DynamoUpdateItem.Builder.create(this, "UpdateStatusToFailed")
+                .table(metadataTable)
+                .key(Map.of(
+                    "audioId", DynamoAttributeValue.fromString(JSONPATH_OBJECT_KEY)
+                ))
+                .updateExpression("SET #status = :failed, #updatedAt = :updatedAt, #errorInfo = :errorInfo")
+                .expressionAttributeNames(Map.of(
+                    "#status", "status",
+                    "#updatedAt", "updatedAt",
+                    "#errorInfo", "errorInfo"
+                ))
+                .expressionAttributeValues(Map.of(
+                    ":failed", DynamoAttributeValue.fromString(STATUS_FAILED),
+                    ":updatedAt", DynamoAttributeValue.fromString("$$.State.EnteredTime"),
+                    ":errorInfo", DynamoAttributeValue.fromString("$.Error")
+                ))
+                .resultPath("$.updateResult")
+                .build();
+
+        // SNS Publish Task - Send failure notification (Issue #6)
+        SnsPublish publishFailureNotification = SnsPublish.Builder.create(this, "PublishFailureNotification")
+                .topic(failedTopic)
+                .message(TaskInput.fromObject(Map.of(
+                    "status", "FAILED",
+                    "audioId", TaskInput.fromJsonPathAt(JSONPATH_OBJECT_KEY),
+                    "error", TaskInput.fromJsonPathAt("$.Error"),
+                    "message", "Sleep audio pipeline failed during processing",
+                    "timestamp", TaskInput.fromJsonPathAt("$$.State.EnteredTime")
+                )))
+                .subject("Sleep Audio Pipeline - Processing Failed")
+                .resultPath("$.snsResult")
+                .build();
+
+        // Fail state
+        Fail failState = Fail.Builder.create(this, "ProcessingFailed")
+                .comment("Processing failed - see error logs")
+                .build();
+
+        // Chain success path: UpdateStatus -> PublishSuccess -> Success
+        updateStatusToCompleted.next(publishSuccessNotification).next(successState);
+
+        // Chain error path: UpdateStatusToFailed -> PublishFailure -> Fail
+        updateStatusToFailed.next(publishFailureNotification).next(failState);
+
+        // Add error handling to Polly task (Issue #6)
+        pollyTask.addCatch(updateStatusToFailed, CatchProps.builder()
+                .errors(List.of(Errors.ALL))
+                .resultPath("$.Error")
+                .build());
+
+        // Chain the states: PutMetadata -> Polly Task -> UpdateStatusToCompleted (Issue #5 and #6)
+        putMetadataTask.next(pollyTask).next(updateStatusToCompleted);
 
         // Step Functions State Machine
         StateMachine stateMachine = StateMachine.Builder.create(this, "SleepAudioPipelineStateMachine")
@@ -145,6 +255,10 @@ public class CdkBaseStack extends Stack {
 
         // Grant the state machine permissions to write to DynamoDB table (Issue #5)
         metadataTable.grantWriteData(stateMachine);
+
+        // Grant the state machine permissions to publish to SNS topics (Issue #6)
+        completedTopic.grantPublish(stateMachine);
+        failedTopic.grantPublish(stateMachine);
 
         // EventBridge Rule - triggers on S3 Object Created events from input bucket
         Rule eventRule = Rule.Builder.create(this, "S3ObjectCreatedRule")

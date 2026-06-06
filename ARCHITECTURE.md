@@ -1,10 +1,10 @@
 # Architecture
 
-> **Status:** Partial Implementation (Issue #5 complete). The core S3 buckets, EventBridge
-> rule, Step Functions state machine skeleton with DynamoDB metadata integration, and Polly
-> integration are now implemented. This document is the **single source of truth** for the
-> Event-Driven Sleep Audio Pipeline. Every subsequent issue must keep this file — and its
-> Mermaid diagram — in sync with the implementation under strict TDD.
+> **Status:** Partial Implementation (Issue #6 complete). The core S3 buckets, EventBridge
+> rule, Step Functions state machine with DynamoDB metadata integration, Polly integration,
+> **SNS notifications, and error handling** are now implemented. This document is the **single
+> source of truth** for the Event-Driven Sleep Audio Pipeline. Every subsequent issue must keep
+> this file — and its Mermaid diagram — in sync with the implementation under strict TDD.
 
 ## 1. High-Level Overview
 
@@ -75,34 +75,48 @@ flowchart TD
     end
 
     subgraph Processing["Processing — AWS Step Functions State Machine"]
-        direction LR
+        direction TB
         PutMetadata["DynamoDB PutItem Task<br/>Write Initial Metadata<br/>(status=PROCESSING)"]
         Polly["Amazon Polly Task<br/>startSpeechSynthesisTask"]
-        Success["Success State"]
+        
+        subgraph SuccessPath["Success Path (Issue #6)"]
+            UpdateCompleted["DynamoDB UpdateItem<br/>Set status=COMPLETED<br/>+ updatedAt"]
+            PublishSuccess["SNS Publish<br/>Success Notification"]
+            Success["Success State"]
+            UpdateCompleted --> PublishSuccess --> Success
+        end
+        
+        subgraph ErrorPath["Error Path (Issue #6)"]
+            UpdateFailed["DynamoDB UpdateItem<br/>Set status=FAILED<br/>+ error info"]
+            PublishFailure["SNS Publish<br/>Failure Notification"]
+            Fail["Fail State"]
+            UpdateFailed --> PublishFailure --> Fail
+        end
+        
         PutMetadata --> Polly
-        Polly --> Success
+        Polly -->|Success| UpdateCompleted
+        Polly -.->|Catch All Errors| UpdateFailed
         
         %% Future states (not yet implemented)
         Validate["Validate & Extract Metadata<br/>(Future)"]
         Bedrock["Amazon Bedrock (optional)<br/>AI Soundscapes / Enhancement<br/>(Future)"]
         Persist["Persist Processed Audio<br/>(Future)"]
-        UpdateStatus["Update Status to COMPLETED<br/>(Future)"]
-        Notify["Publish Outcome<br/>(Future)"]
         
         style Validate stroke-dasharray: 5 5
         style Bedrock stroke-dasharray: 5 5
         style Persist stroke-dasharray: 5 5
-        style UpdateStatus stroke-dasharray: 5 5
-        style Notify stroke-dasharray: 5 5
     end
 
     subgraph Storage
         S3Out[("S3 Processed Audio Bucket<br/>(private, SSE, versioning ON)")]
-        DDB[("DynamoDB Metadata Table<br/>audioId (PK), status, inputBucket,<br/>inputKey, createdAt")]
+        DDB[("DynamoDB Metadata Table<br/>audioId (PK), status, inputBucket,<br/>inputKey, createdAt, updatedAt")]
     end
 
-    SNS["SNS Notifications Topic<br/>success / failure fan-out<br/>(Future)"]
-    style SNS stroke-dasharray: 5 5
+    subgraph Notifications["Notifications (Issue #6)"]
+        SNSCompleted["SNS Topic<br/>Pipeline Completed<br/>(KMS encrypted)"]
+        SNSFailed["SNS Topic<br/>Pipeline Failed<br/>(KMS encrypted)"]
+    end
+
     Ops([Operators & Downstream Consumers])
     CW[("Amazon CloudWatch<br/>Logs, Metrics, Alarms")]
 
@@ -110,22 +124,33 @@ flowchart TD
     S3In -->|Object Created event| EB
     EB -->|Start execution<br/>with S3 event data| PutMetadata
     PutMetadata -->|Write metadata| DDB
+    UpdateCompleted -->|Update status| DDB
+    UpdateFailed -->|Update status| DDB
     Polly -->|Write audio| S3Out
+    PublishSuccess -->|Notify| SNSCompleted
+    PublishFailure -->|Notify| SNSFailed
+    SNSCompleted --> Ops
+    SNSFailed --> Ops
 
     Processing -.->|logs & metrics| CW
     S3In -.-> CW
     S3Out -.-> CW
     DDB -.-> CW
+    SNSCompleted -.-> CW
+    SNSFailed -.-> CW
 ```
 
-The diagram reflects the current implementation (Issue #5): ingestion and event detection feed 
-the Step Functions state machine with transformed S3 event data. The state machine now writes 
-initial metadata to DynamoDB, processes audio with Polly, and completes successfully. The 
-DynamoDB table is now implemented with proper schema and configuration. Future states 
-(validation, Bedrock enhancement, persistence, status updates, and notification) are shown 
-with dashed borders to indicate the planned architecture.
+The diagram reflects the current implementation (Issue #6): ingestion and event detection feed 
+the Step Functions state machine with transformed S3 event data. The state machine writes initial 
+metadata to DynamoDB, processes audio with Polly, and then:
 
-## 3.1. Implemented Components (Issues #3, #4, and #5)
+- **Success Path**: Updates DynamoDB status to COMPLETED, publishes to SNS success topic, terminates successfully
+- **Error Path**: Catches all errors, updates DynamoDB status to FAILED with error details, publishes to SNS failure topic, terminates in failed state
+
+Both SNS topics are encrypted with KMS and send structured messages with metadata. Future states 
+(validation, Bedrock enhancement, persistence) are shown with dashed borders to indicate planned architecture.
+
+## 3.1. Implemented Components (Issues #3, #4, #5, and #6)
 
 The following foundational resources are now implemented:
 
@@ -159,7 +184,7 @@ The following foundational resources are now implemented:
 - **State Machine Name**: `SleepAudioPipelineStateMachine`
 - **Logging**: CloudWatch Logs enabled with ALL level logging and execution data included
 - **IAM Role**: Automatically created with least-privilege permissions
-- **Definition**: Extended workflow with DynamoDB metadata integration (Issue #5)
+- **Definition**: Extended workflow with DynamoDB metadata integration and error handling (Issues #5 and #6)
   - **DynamoDB PutItem Task State** (Issue #5): Writes initial metadata record at pipeline start
     - Table: SleepAudioMetadataTable
     - Attributes: `audioId` (from S3 object key), `status` (PROCESSING), `inputBucket`, `inputKey`, `createdAt`
@@ -170,12 +195,21 @@ The following foundational resources are now implemented:
     - Voice: Joanna (neural voice)
     - Output Format: MP3
     - Output Location: SleepAudioOutputBucket
-  - **Success State**: Terminal success state
+    - **Error Handling** (Issue #6): Catches all errors and routes to failure path
+  - **Success Path** (Issue #6):
+    - **DynamoDB UpdateItem Task**: Updates status to `COMPLETED` with timestamp
+    - **SNS Publish Task**: Publishes success notification with metadata
+    - **Success State**: Terminal success state
+  - **Error Path** (Issue #6):
+    - **DynamoDB UpdateItem Task**: Updates status to `FAILED` with error info and timestamp
+    - **SNS Publish Task**: Publishes failure notification with error details
+    - **Fail State**: Terminal fail state
 - **Permissions**: IAM policy grants access to:
   - CloudWatch Logs (for state machine execution logging)
-  - DynamoDB Table (PutItem permission for metadata writes) — Issue #5
+  - DynamoDB Table (PutItem and UpdateItem permissions for metadata writes) — Issues #5 and #6
   - Amazon Polly (startSpeechSynthesisTask action)
   - S3 Output Bucket (write permissions for Polly output)
+  - SNS Topics (Publish permission for notifications) — Issue #6
 
 ### CloudWatch Log Group (`StateMachineLogGroup`)
 - **Retention**: 1 week (suitable for development and debugging)
@@ -190,17 +224,50 @@ The following foundational resources are now implemented:
 - **Removal Policy**: RETAIN to prevent accidental data loss
 - **Attributes** (stored in item):
   - `audioId`: Unique identifier (S3 object key)
-  - `status`: Current processing status (PROCESSING, COMPLETED, FAILED)
+  - `status`: Current processing status (PROCESSING, COMPLETED, FAILED) — Issues #5 and #6
   - `inputBucket`: S3 bucket name where the raw audio was uploaded
   - `inputKey`: S3 object key of the raw audio
   - `createdAt`: Timestamp when the pipeline started processing
-  - Future attributes: `updatedAt`, `outputKey`, `duration`, `errorMessage`, etc.
+  - `updatedAt`: Timestamp when status was last updated — Issue #6
+  - `errorInfo`: Error details if status is FAILED — Issue #6
+  - Future attributes: `outputKey`, `duration`, etc.
 
-These resources establish the complete event-driven orchestration foundation with metadata 
-tracking for the pipeline. The Step Functions state machine now writes initial metadata to 
-DynamoDB before processing, providing visibility into pipeline execution state. The DynamoDB 
-table uses a simple partition-key-only schema suitable for tracking individual audio processing 
-jobs. Future issues will add status updates and additional metadata as the workflow evolves.
+### SNS Topics for Notifications — Issue #6
+
+#### Completed Topic (`SleepAudioPipelineCompletedTopic`)
+- **Display Name**: Sleep Audio Pipeline Completed
+- **Encryption**: KMS encryption with customer-managed key
+- **Purpose**: Publishes success notifications when pipeline completes successfully
+- **Message Structure**: Structured JSON with:
+  - `status`: "COMPLETED"
+  - `audioId`: S3 object key
+  - `message`: Success message
+  - `timestamp`: Completion timestamp
+- **Subscribers**: Operators and downstream consumers (to be configured)
+
+#### Failed Topic (`SleepAudioPipelineFailedTopic`)
+- **Display Name**: Sleep Audio Pipeline Failed
+- **Encryption**: KMS encryption with customer-managed key
+- **Purpose**: Publishes failure notifications when pipeline encounters errors
+- **Message Structure**: Structured JSON with:
+  - `status`: "FAILED"
+  - `audioId`: S3 object key
+  - `error`: Error details from state machine
+  - `message`: Failure message
+  - `timestamp`: Failure timestamp
+- **Subscribers**: Operators and downstream consumers (to be configured)
+
+### KMS Encryption Key (`SnsEncryptionKey`) — Issue #6
+- **Purpose**: Encrypts SNS topic messages at rest
+- **Key Rotation**: Enabled (automatic annual rotation)
+- **Removal Policy**: DESTROY (safe for non-production environments)
+- **Usage**: Shared by both SNS topics for consistent encryption
+
+These resources establish complete notification and error handling for the pipeline. The Step 
+Functions state machine now reliably tracks status changes in DynamoDB and publishes structured 
+notifications to SNS topics on both success and failure paths. The SNS topics use KMS encryption 
+for security and can be subscribed to by email, Lambda, SQS, or other AWS services for downstream 
+processing or alerting.
 
 ## 4. Key AWS Services and Rationale
 

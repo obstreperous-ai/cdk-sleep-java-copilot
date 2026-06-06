@@ -327,4 +327,89 @@ class CdkBaseTest {
             ))
         )));
     }
+
+    // ===== Issue #6: SNS Notifications Tests =====
+
+    @Test
+    void createsCompletedSNSTopic() {
+        Template template = getTestTemplate();
+        
+        // Verify at least one SNS topic exists for success notifications
+        assertTrue(template.findResources("AWS::SNS::Topic").size() >= 1,
+            "Expected at least one SNS topic for pipeline notifications");
+    }
+
+    @Test
+    void createsFailedSNSTopic() {
+        Template template = getTestTemplate();
+        
+        // Verify at least two SNS topics exist (completed and failed)
+        assertTrue(template.findResources("AWS::SNS::Topic").size() >= 2,
+            "Expected at least two SNS topics (completed and failed)");
+    }
+
+    @Test
+    void snsTopicsAreEncrypted() {
+        Template template = getTestTemplate();
+        
+        // Verify SNS topics have encryption enabled
+        template.hasResourceProperties("AWS::SNS::Topic", Match.objectLike(Map.of(
+            "KmsMasterKeyId", Match.anyValue()
+        )));
+    }
+
+    // ===== Issue #6: State Machine Error Handling Tests =====
+
+    @Test
+    void stateMachineHasErrorHandling() {
+        Template template = getTestTemplate();
+        
+        // Verify the state machine has an IAM policy for SNS publish
+        template.hasResourceProperties("AWS::IAM::Policy", Match.objectLike(Map.of(
+            "PolicyDocument", Match.objectLike(Map.of(
+                "Statement", Match.arrayWith(List.of(
+                    Match.objectLike(Map.of(
+                        "Action", "sns:Publish",
+                        "Effect", "Allow"
+                    ))
+                ))
+            ))
+        )));
+    }
+
+    @Test
+    void stateMachineCanPublishToSNS() {
+        Template template = getTestTemplate();
+        
+        // Verify state machine execution role has SNS publish permissions
+        template.hasResourceProperties("AWS::IAM::Policy", Match.objectLike(Map.of(
+            "PolicyDocument", Match.objectLike(Map.of(
+                "Statement", Match.arrayWith(List.of(
+                    Match.objectLike(Map.of(
+                        "Action", "sns:Publish",
+                        "Effect", "Allow",
+                        "Resource", Match.anyValue()
+                    ))
+                ))
+            ))
+        )));
+    }
+
+    @Test
+    void stateMachineCanUpdateDynamoDBStatus() {
+        Template template = getTestTemplate();
+        
+        // Verify state machine execution role has DynamoDB UpdateItem permission
+        // (in addition to PutItem from Issue #5)
+        template.hasResourceProperties("AWS::IAM::Policy", Match.objectLike(Map.of(
+            "PolicyDocument", Match.objectLike(Map.of(
+                "Statement", Match.arrayWith(List.of(
+                    Match.objectLike(Map.of(
+                        "Action", Match.arrayWith(List.of("dynamodb:UpdateItem")),
+                        "Effect", "Allow"
+                    ))
+                ))
+            ))
+        )));
+    }
 }

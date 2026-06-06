@@ -4,6 +4,7 @@ import software.constructs.Construct;
 import software.amazon.awscdk.Stack;
 import software.amazon.awscdk.StackProps;
 import software.amazon.awscdk.RemovalPolicy;
+import software.amazon.awscdk.Duration;
 import software.amazon.awscdk.services.s3.Bucket;
 import software.amazon.awscdk.services.s3.BucketEncryption;
 import software.amazon.awscdk.services.s3.BlockPublicAccess;
@@ -18,6 +19,7 @@ import software.amazon.awscdk.services.stepfunctions.LogOptions;
 import software.amazon.awscdk.services.stepfunctions.tasks.CallAwsService;
 import software.amazon.awscdk.services.stepfunctions.tasks.DynamoPutItem;
 import software.amazon.awscdk.services.stepfunctions.tasks.DynamoAttributeValue;
+import software.amazon.awscdk.services.stepfunctions.tasks.LambdaInvoke;
 import software.amazon.awscdk.services.stepfunctions.Pass;
 import software.amazon.awscdk.services.stepfunctions.Succeed;
 import software.amazon.awscdk.services.stepfunctions.Fail;
@@ -35,6 +37,9 @@ import software.amazon.awscdk.services.dynamodb.BillingMode;
 import software.amazon.awscdk.services.dynamodb.TableEncryption;
 import software.amazon.awscdk.services.sns.Topic;
 import software.amazon.awscdk.services.kms.Key;
+import software.amazon.awscdk.services.lambda.Function;
+import software.amazon.awscdk.services.lambda.Runtime;
+import software.amazon.awscdk.services.lambda.Code;
 
 import java.util.List;
 import java.util.Map;
@@ -129,6 +134,35 @@ public class CdkBaseStack extends Stack {
                     "createdAt", DynamoAttributeValue.fromString(JSONPATH_EVENT_TIME)
                 ))
                 .resultPath("$.dynamoResult")
+                .build();
+
+        // Lambda Function - Sleep Audio Processor (Issue #7)
+        // Basic skeleton for audio processing, metadata enrichment, and validation
+        Function audioProcessorFunction = Function.Builder.create(this, "SleepAudioProcessorFunction")
+                .functionName("SleepAudioProcessor")
+                .runtime(Runtime.JAVA_17)
+                .handler("com.myorg.lambda.SleepAudioProcessor::handleRequest")
+                .code(Code.fromAsset("target/classes"))
+                .timeout(Duration.seconds(30))
+                .memorySize(512)
+                .environment(Map.of(
+                    "METADATA_TABLE_NAME", metadataTable.getTableName()
+                ))
+                .build();
+
+        // Grant Lambda function permissions to access DynamoDB table (Issue #7)
+        metadataTable.grantReadWriteData(audioProcessorFunction);
+
+        // Lambda Invoke Task - Process audio metadata (Issue #7)
+        // This task invokes the Lambda function to validate and enrich metadata
+        LambdaInvoke processAudioTask = LambdaInvoke.Builder.create(this, "ProcessAudioTask")
+                .lambdaFunction(audioProcessorFunction)
+                .payload(TaskInput.fromObject(Map.of(
+                    "detail", TaskInput.fromJsonPathAt("$.detail"),
+                    "time", TaskInput.fromJsonPathAt("$.time"),
+                    "dynamoResult", TaskInput.fromJsonPathAt("$.dynamoResult")
+                )))
+                .resultPath("$.processorResult")
                 .build();
 
         // Polly Task - Minimal integration using CallAwsService
@@ -235,8 +269,8 @@ public class CdkBaseStack extends Stack {
                 .resultPath("$.Error")
                 .build());
 
-        // Chain the states: PutMetadata -> Polly Task -> UpdateStatusToCompleted (Issue #5 and #6)
-        putMetadataTask.next(pollyTask).next(updateStatusToCompleted);
+        // Chain the states: PutMetadata -> ProcessAudio (Lambda) -> Polly Task -> UpdateStatusToCompleted (Issue #7)
+        putMetadataTask.next(processAudioTask).next(pollyTask).next(updateStatusToCompleted);
 
         // Step Functions State Machine
         StateMachine stateMachine = StateMachine.Builder.create(this, "SleepAudioPipelineStateMachine")

@@ -155,13 +155,9 @@ public class CdkBaseStack extends Stack {
 
         // Lambda Invoke Task - Process audio metadata (Issue #7)
         // This task invokes the Lambda function to validate and enrich metadata
+        // By default, LambdaInvoke passes the entire state input to the Lambda
         LambdaInvoke processAudioTask = LambdaInvoke.Builder.create(this, "ProcessAudioTask")
                 .lambdaFunction(audioProcessorFunction)
-                .payload(TaskInput.fromObject(Map.of(
-                    "detail", TaskInput.fromJsonPathAt("$.detail"),
-                    "time", TaskInput.fromJsonPathAt("$.time"),
-                    "dynamoResult", TaskInput.fromJsonPathAt("$.dynamoResult")
-                )))
                 .resultPath("$.processorResult")
                 .build();
 

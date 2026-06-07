@@ -134,6 +134,19 @@ class SleepAudioProcessorTest {
     }
 
     @Test
+    void rejectsFileWithNoExtension() {
+        // Arrange: File without extension
+        Map<String, Object> input = createValidInput("test-bucket", "audio/testfile");
+
+        // Act & Assert: Should throw IllegalArgumentException
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> processor.handleRequest(input, mockContext)
+        );
+        assertTrue(exception.getMessage().contains("File has no extension"));
+    }
+
+    @Test
     void returnsErrorStatusOnValidationFailure() {
         // Arrange: Invalid input
         Map<String, Object> input = createValidInput("test-bucket", "audio/test.exe");

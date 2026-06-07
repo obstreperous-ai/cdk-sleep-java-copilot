@@ -71,6 +71,10 @@ public class SleepAudioProcessor implements RequestHandler<Map<String, Object>, 
         
         // Validate file extension (Issue #8)
         String fileExtension = getFileExtension(objectKey);
+        if (fileExtension.isEmpty()) {
+            throw new IllegalArgumentException(
+                "File has no extension. Supported formats: " + SUPPORTED_EXTENSIONS);
+        }
         if (!SUPPORTED_EXTENSIONS.contains(fileExtension.toLowerCase())) {
             throw new IllegalArgumentException(
                 "Unsupported file extension: " + fileExtension + 

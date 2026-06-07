@@ -412,4 +412,122 @@ class CdkBaseTest {
             ))
         )));
     }
+
+    // ===== Issue #7: Lambda Function Tests =====
+
+    @Test
+    void createsLambdaFunction() {
+        Template template = getTestTemplate();
+        
+        // Verify at least one Lambda function exists for audio processing
+        // (Stack also includes BucketNotificationsHandler created by CDK)
+        assertTrue(template.findResources("AWS::Lambda::Function").size() >= 1,
+            "Expected at least one Lambda function");
+    }
+
+    @Test
+    void lambdaFunctionHasCorrectRuntime() {
+        Template template = getTestTemplate();
+        
+        // Verify Lambda function uses Java 17 runtime
+        template.hasResourceProperties("AWS::Lambda::Function", Match.objectLike(Map.of(
+            "Runtime", "java17",
+            "Handler", Match.stringLikeRegexp(".*AudioProcessor.*")
+        )));
+    }
+
+    @Test
+    void lambdaFunctionHasEnvironmentVariables() {
+        Template template = getTestTemplate();
+        
+        // Verify Lambda function has DynamoDB table name as environment variable
+        template.hasResourceProperties("AWS::Lambda::Function", Match.objectLike(Map.of(
+            "Environment", Match.objectLike(Map.of(
+                "Variables", Match.objectLike(Map.of(
+                    "METADATA_TABLE_NAME", Match.anyValue()
+                ))
+            ))
+        )));
+    }
+
+    @Test
+    void lambdaFunctionHasExecutionRole() {
+        Template template = getTestTemplate();
+        
+        // Verify Lambda function has an execution role
+        template.hasResourceProperties("AWS::Lambda::Function", Match.objectLike(Map.of(
+            "Role", Match.anyValue()
+        )));
+        
+        // Verify IAM role exists for Lambda execution
+        template.hasResourceProperties("AWS::IAM::Role", Match.objectLike(Map.of(
+            "AssumeRolePolicyDocument", Match.objectLike(Map.of(
+                "Statement", Match.arrayWith(List.of(
+                    Match.objectLike(Map.of(
+                        "Action", "sts:AssumeRole",
+                        "Effect", "Allow",
+                        "Principal", Match.objectLike(Map.of(
+                            "Service", "lambda.amazonaws.com"
+                        ))
+                    ))
+                ))
+            ))
+        )));
+    }
+
+    @Test
+    void lambdaFunctionCanAccessDynamoDB() {
+        Template template = getTestTemplate();
+        
+        // Verify Lambda execution role has DynamoDB read/write permissions
+        template.hasResourceProperties("AWS::IAM::Policy", Match.objectLike(Map.of(
+            "PolicyDocument", Match.objectLike(Map.of(
+                "Statement", Match.arrayWith(List.of(
+                    Match.objectLike(Map.of(
+                        "Action", Match.arrayWith(List.of(
+                            "dynamodb:GetItem",
+                            "dynamodb:PutItem",
+                            "dynamodb:UpdateItem"
+                        )),
+                        "Effect", "Allow"
+                    ))
+                ))
+            ))
+        )));
+    }
+
+    @Test
+    void stateMachineHasLambdaInvokeTask() {
+        Template template = getTestTemplate();
+        
+        // Verify the state machine has permission to invoke Lambda
+        template.hasResourceProperties("AWS::IAM::Policy", Match.objectLike(Map.of(
+            "PolicyDocument", Match.objectLike(Map.of(
+                "Statement", Match.arrayWith(List.of(
+                    Match.objectLike(Map.of(
+                        "Action", "lambda:InvokeFunction",
+                        "Effect", "Allow"
+                    ))
+                ))
+            ))
+        )));
+    }
+
+    @Test
+    void stateMachineCanInvokeLambda() {
+        Template template = getTestTemplate();
+        
+        // Verify state machine execution role has Lambda invoke permission
+        template.hasResourceProperties("AWS::IAM::Policy", Match.objectLike(Map.of(
+            "PolicyDocument", Match.objectLike(Map.of(
+                "Statement", Match.arrayWith(List.of(
+                    Match.objectLike(Map.of(
+                        "Action", "lambda:InvokeFunction",
+                        "Effect", "Allow",
+                        "Resource", Match.anyValue()
+                    ))
+                ))
+            ))
+        )));
+    }
 }

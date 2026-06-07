@@ -1,10 +1,11 @@
 # Architecture
 
-> **Status:** Partial Implementation (Issue #6 complete). The core S3 buckets, EventBridge
-> rule, Step Functions state machine with DynamoDB metadata integration, Polly integration,
-> **SNS notifications, and error handling** are now implemented. This document is the **single
-> source of truth** for the Event-Driven Sleep Audio Pipeline. Every subsequent issue must keep
-> this file — and its Mermaid diagram — in sync with the implementation under strict TDD.
+> **Status:** Partial Implementation (Issue #7 complete). The core S3 buckets, EventBridge
+> rule, Step Functions state machine with DynamoDB metadata integration, **Lambda function for 
+> audio processing**, Polly integration, SNS notifications, and error handling are now implemented. 
+> This document is the **single source of truth** for the Event-Driven Sleep Audio Pipeline. 
+> Every subsequent issue must keep this file — and its Mermaid diagram — in sync with the 
+> implementation under strict TDD.
 
 ## 1. High-Level Overview
 
@@ -77,6 +78,7 @@ flowchart TD
     subgraph Processing["Processing — AWS Step Functions State Machine"]
         direction TB
         PutMetadata["DynamoDB PutItem Task<br/>Write Initial Metadata<br/>(status=PROCESSING)"]
+        ProcessAudio["Lambda Function<br/>SleepAudioProcessor<br/>(Issue #7)<br/>Validate & Enrich Metadata"]
         Polly["Amazon Polly Task<br/>startSpeechSynthesisTask"]
         
         subgraph SuccessPath["Success Path (Issue #6)"]
@@ -93,12 +95,13 @@ flowchart TD
             UpdateFailed --> PublishFailure --> Fail
         end
         
-        PutMetadata --> Polly
+        PutMetadata --> ProcessAudio
+        ProcessAudio --> Polly
         Polly -->|Success| UpdateCompleted
         Polly -.->|Catch All Errors| UpdateFailed
         
         %% Future states (not yet implemented)
-        Validate["Validate & Extract Metadata<br/>(Future)"]
+        Validate["Validate & Extract Metadata<br/>(Future - replaced by Lambda)"]
         Bedrock["Amazon Bedrock (optional)<br/>AI Soundscapes / Enhancement<br/>(Future)"]
         Persist["Persist Processed Audio<br/>(Future)"]
         
@@ -140,17 +143,20 @@ flowchart TD
     SNSFailed -.-> CW
 ```
 
-The diagram reflects the current implementation (Issue #6): ingestion and event detection feed 
+The diagram reflects the current implementation (Issue #7): ingestion and event detection feed 
 the Step Functions state machine with transformed S3 event data. The state machine writes initial 
-metadata to DynamoDB, processes audio with Polly, and then:
+metadata to DynamoDB, invokes a Lambda function to validate and enrich metadata, processes audio 
+with Polly, and then:
 
 - **Success Path**: Updates DynamoDB status to COMPLETED, publishes to SNS success topic, terminates successfully
 - **Error Path**: Catches all errors, updates DynamoDB status to FAILED with error details, publishes to SNS failure topic, terminates in failed state
 
-Both SNS topics are encrypted with KMS and send structured messages with metadata. Future states 
-(validation, Bedrock enhancement, persistence) are shown with dashed borders to indicate planned architecture.
+The Lambda function (SleepAudioProcessor) serves as a placeholder for future audio processing logic 
+including validation, metadata extraction, and enrichment. Both SNS topics are encrypted with KMS 
+and send structured messages with metadata. Future states (Bedrock enhancement, persistence) are 
+shown with dashed borders to indicate planned architecture.
 
-## 3.1. Implemented Components (Issues #3, #4, #5, and #6)
+## 3.1. Implemented Components (Issues #3, #4, #5, #6, and #7)
 
 The following foundational resources are now implemented:
 
@@ -184,12 +190,17 @@ The following foundational resources are now implemented:
 - **State Machine Name**: `SleepAudioPipelineStateMachine`
 - **Logging**: CloudWatch Logs enabled with ALL level logging and execution data included
 - **IAM Role**: Automatically created with least-privilege permissions
-- **Definition**: Extended workflow with DynamoDB metadata integration and error handling (Issues #5 and #6)
+- **Definition**: Extended workflow with Lambda integration, DynamoDB metadata integration and error handling (Issues #5, #6, and #7)
   - **DynamoDB PutItem Task State** (Issue #5): Writes initial metadata record at pipeline start
     - Table: SleepAudioMetadataTable
     - Attributes: `audioId` (from S3 object key), `status` (PROCESSING), `inputBucket`, `inputKey`, `createdAt`
     - Uses JsonPath expressions to extract values from EventBridge input
     - Result stored at `$.dynamoResult` path
+  - **Lambda Invoke Task State** (Issue #7): Invokes SleepAudioProcessor Lambda function
+    - Function: SleepAudioProcessor (Java 17)
+    - Payload: S3 event details, DynamoDB result from previous step
+    - Purpose: Validate and enrich audio metadata (placeholder for future processing)
+    - Result stored at `$.processorResult` path
   - **Polly Task State**: Invokes `polly:startSpeechSynthesisTask` with placeholder parameters
     - Text: Placeholder narration text
     - Voice: Joanna (neural voice)
@@ -207,6 +218,7 @@ The following foundational resources are now implemented:
 - **Permissions**: IAM policy grants access to:
   - CloudWatch Logs (for state machine execution logging)
   - DynamoDB Table (PutItem and UpdateItem permissions for metadata writes) — Issues #5 and #6
+  - Lambda Function (InvokeFunction permission) — Issue #7
   - Amazon Polly (startSpeechSynthesisTask action)
   - S3 Output Bucket (write permissions for Polly output)
   - SNS Topics (Publish permission for notifications) — Issue #6
@@ -263,11 +275,33 @@ The following foundational resources are now implemented:
 - **Removal Policy**: DESTROY (safe for non-production environments)
 - **Usage**: Shared by both SNS topics for consistent encryption
 
+### Lambda Function (`SleepAudioProcessor`) — Issue #7
+- **Function Name**: SleepAudioProcessor
+- **Runtime**: Java 17 (matches CDK project runtime)
+- **Handler**: `com.myorg.lambda.SleepAudioProcessor::handleRequest`
+- **Timeout**: 30 seconds
+- **Memory**: 512 MB
+- **Environment Variables**:
+  - `METADATA_TABLE_NAME`: DynamoDB table name for metadata access
+- **Purpose**: Basic skeleton for audio processing, validation, and metadata enrichment
+- **Current Functionality**:
+  - Logs input from state machine for observability
+  - Extracts S3 event details (bucket name, object key)
+  - Returns enriched metadata response with status and timestamp
+  - Placeholder for future validation, format detection, and metadata extraction
+- **IAM Permissions**: Least-privilege execution role with:
+  - DynamoDB read/write access to metadata table
+  - CloudWatch Logs write access
+- **Integration**: Invoked by state machine between PutMetadata and Polly tasks
+- **Input**: Receives S3 event details and DynamoDB result from state machine
+- **Output**: Returns validation status and enriched metadata to state machine
+
 These resources establish complete notification and error handling for the pipeline. The Step 
 Functions state machine now reliably tracks status changes in DynamoDB and publishes structured 
 notifications to SNS topics on both success and failure paths. The SNS topics use KMS encryption 
 for security and can be subscribed to by email, Lambda, SQS, or other AWS services for downstream 
-processing or alerting.
+processing or alerting. The Lambda function provides a foundation for future audio processing 
+features including validation, format detection, and metadata enrichment.
 
 ## 4. Key AWS Services and Rationale
 
@@ -276,6 +310,7 @@ processing or alerting.
 | **Amazon S3** | Ingestion bucket for raw uploads and processed bucket for outputs | Durable, cheap object storage; native event integration; versioning protects against accidental overwrites and supports reprocessing. |
 | **Amazon EventBridge** | Detects S3 object-created events and triggers the workflow | Decouples ingestion from processing; rich content-based filtering; easy to add future consumers without touching producers. |
 | **AWS Step Functions** | Orchestrates the multi-step processing workflow | Explicit, visual state machine with built-in retries, error handling, and per-state observability — superior to a tangle of Lambda calls. |
+| **AWS Lambda** | Validates and enriches audio metadata; placeholder for future processing logic | Serverless compute; scales to zero when idle; integrates seamlessly with Step Functions; supports custom business logic. |
 | **Amazon Polly** | Generates soothing narration / text-to-speech | Managed, high-quality neural TTS with no model hosting to operate. |
 | **Amazon Bedrock** *(optional)* | AI-generated sleep soundscapes or audio enhancement | Access to foundation models without managing infrastructure; gated behind context so it is opt-in per environment. |
 | **Amazon DynamoDB** | Stores processing state and catalog metadata | Serverless, single-digit-millisecond key-value access that scales to zero; a natural fit for per-object status records. |

@@ -259,13 +259,28 @@ public class CdkBaseStack extends Stack {
         // Chain error path: UpdateStatusToFailed -> PublishFailure -> Fail
         updateStatusToFailed.next(publishFailureNotification).next(failState);
 
+        // Add error handling to Lambda invoke task (Issue #8)
+        // Catch validation errors and route to failure path
+        processAudioTask.addCatch(updateStatusToFailed, CatchProps.builder()
+                .errors(List.of(Errors.ALL))
+                .resultPath("$.Error")
+                .build());
+
+        // Add error handling to PutMetadata task (Issue #8)
+        // Catch DynamoDB errors and route to failure path
+        putMetadataTask.addCatch(updateStatusToFailed, CatchProps.builder()
+                .errors(List.of(Errors.ALL))
+                .resultPath("$.Error")
+                .build());
+
         // Add error handling to Polly task (Issue #6)
         pollyTask.addCatch(updateStatusToFailed, CatchProps.builder()
                 .errors(List.of(Errors.ALL))
                 .resultPath("$.Error")
                 .build());
 
-        // Chain the states: PutMetadata -> ProcessAudio (Lambda) -> Polly Task -> UpdateStatusToCompleted (Issue #7)
+        // Chain the states: PutMetadata -> ProcessAudio (Lambda) -> Polly Task -> UpdateStatusToCompleted (Issue #7, #8)
+        // Complete end-to-end pipeline with error handling at each stage
         putMetadataTask.next(processAudioTask).next(pollyTask).next(updateStatusToCompleted);
 
         // Step Functions State Machine

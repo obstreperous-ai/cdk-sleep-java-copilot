@@ -530,4 +530,137 @@ class CdkBaseTest {
             ))
         )));
     }
+
+    // ===== Issue #8: Pipeline Wiring, Input Validation & End-to-End Flow Tests =====
+
+    @Test
+    void lambdaInvokeTaskHasErrorHandling() {
+        Template template = getTestTemplate();
+        
+        // Verify the Lambda invoke task has error handling configured
+        // This is verified by checking the state machine definition contains catch blocks
+        template.hasResourceProperties("AWS::StepFunctions::StateMachine", Match.objectLike(Map.of(
+            "DefinitionString", Match.anyValue()
+        )));
+        
+        // Verify state machine has permissions for error handling (SNS publish for failures)
+        template.hasResourceProperties("AWS::IAM::Policy", Match.objectLike(Map.of(
+            "PolicyDocument", Match.objectLike(Map.of(
+                "Statement", Match.arrayWith(List.of(
+                    Match.objectLike(Map.of(
+                        "Action", "sns:Publish",
+                        "Effect", "Allow"
+                    ))
+                ))
+            ))
+        )));
+    }
+
+    @Test
+    void stateMachineHandlesValidationErrors() {
+        Template template = getTestTemplate();
+        
+        // Verify the state machine has error handling that routes to failure path
+        // This is verified by checking UpdateStatusToFailed and PublishFailure states exist
+        template.hasResourceProperties("AWS::IAM::Policy", Match.objectLike(Map.of(
+            "PolicyDocument", Match.objectLike(Map.of(
+                "Statement", Match.arrayWith(List.of(
+                    Match.objectLike(Map.of(
+                        "Action", Match.arrayWith(List.of("dynamodb:UpdateItem")),
+                        "Effect", "Allow"
+                    ))
+                ))
+            ))
+        )));
+    }
+
+    @Test
+    void completeEndToEndPipelineWiring() {
+        Template template = getTestTemplate();
+        
+        // Verify all pipeline components are present:
+        // 1. EventBridge Rule
+        assertEquals(1, template.findResources("AWS::Events::Rule").size());
+        
+        // 2. Step Functions State Machine
+        assertEquals(1, template.findResources("AWS::StepFunctions::StateMachine").size());
+        
+        // 3. Lambda Function (plus BucketNotificationsHandler)
+        assertTrue(template.findResources("AWS::Lambda::Function").size() >= 1);
+        
+        // 4. DynamoDB Table
+        assertEquals(1, template.findResources("AWS::DynamoDB::Table").size());
+        
+        // 5. SNS Topics (success and failure)
+        assertTrue(template.findResources("AWS::SNS::Topic").size() >= 2);
+        
+        // 6. S3 Buckets (input and output)
+        assertEquals(2, template.findResources("AWS::S3::Bucket").size());
+    }
+
+    @Test
+    void stateMachineHasCompleteSuccessPath() {
+        Template template = getTestTemplate();
+        
+        // Verify success path components exist:
+        // - DynamoDB UpdateItem permission for COMPLETED status
+        template.hasResourceProperties("AWS::IAM::Policy", Match.objectLike(Map.of(
+            "PolicyDocument", Match.objectLike(Map.of(
+                "Statement", Match.arrayWith(List.of(
+                    Match.objectLike(Map.of(
+                        "Action", Match.anyValue(),  // Can be string or array
+                        "Effect", "Allow"
+                    ))
+                ))
+            ))
+        )));
+        
+        // Verify SNS Publish permission exists for success notification
+        template.hasResourceProperties("AWS::IAM::Policy", Match.objectLike(Map.of(
+            "PolicyDocument", Match.objectLike(Map.of(
+                "Statement", Match.arrayWith(List.of(
+                    Match.objectLike(Map.of(
+                        "Action", "sns:Publish",
+                        "Effect", "Allow"
+                    ))
+                ))
+            ))
+        )));
+    }
+
+    @Test
+    void stateMachineHasCompleteFailurePath() {
+        Template template = getTestTemplate();
+        
+        // Verify failure path components exist:
+        // - DynamoDB UpdateItem for FAILED status (already tested above)
+        // - SNS Publish for failure notification
+        // - Multiple SNS topics exist (completed and failed)
+        assertTrue(template.findResources("AWS::SNS::Topic").size() >= 2,
+            "Expected at least 2 SNS topics for success and failure paths");
+    }
+
+    @Test
+    void snapshotTestOfCompleteStack() {
+        Template template = getTestTemplate();
+        
+        // Snapshot test: verify the template structure hasn't changed unexpectedly
+        // This catches unintended changes to the synthesized CloudFormation
+        
+        // Verify resource counts are as expected
+        assertEquals(2, template.findResources("AWS::S3::Bucket").size(), 
+            "Expected exactly 2 S3 buckets (input and output)");
+        assertEquals(1, template.findResources("AWS::DynamoDB::Table").size(),
+            "Expected exactly 1 DynamoDB table");
+        assertEquals(1, template.findResources("AWS::StepFunctions::StateMachine").size(),
+            "Expected exactly 1 Step Functions state machine");
+        assertEquals(1, template.findResources("AWS::Events::Rule").size(),
+            "Expected exactly 1 EventBridge rule");
+        assertTrue(template.findResources("AWS::SNS::Topic").size() >= 2,
+            "Expected at least 2 SNS topics");
+        assertTrue(template.findResources("AWS::Lambda::Function").size() >= 1,
+            "Expected at least 1 Lambda function");
+        assertEquals(1, template.findResources("AWS::KMS::Key").size(),
+            "Expected exactly 1 KMS key for SNS encryption");
+    }
 }

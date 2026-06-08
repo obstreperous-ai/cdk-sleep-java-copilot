@@ -1,12 +1,15 @@
 # Architecture
 
-> **Status:** Complete Basic Pipeline (Issue #8 complete). The fully integrated pipeline with 
-> **input validation**, **complete error handling**, and **end-to-end flow** is now implemented. 
-> S3 buckets, EventBridge rule, Step Functions state machine with DynamoDB metadata integration, 
-> Lambda function with input validation, Polly integration, SNS notifications, and comprehensive 
-> error handling are all wired together. This document is the **single source of truth** for the 
-> Event-Driven Sleep Audio Pipeline. Every subsequent issue must keep this file — and its Mermaid 
-> diagram — in sync with the implementation under strict TDD.
+> **Status:** Complete Pipeline Testing & Deployment Preparation (Issue #9 complete). The fully 
+> integrated pipeline now includes **multi-environment support** (dev/stage/prod with context-based 
+> configuration), **environment-specific resource tagging and removal policies**, and a **CDK Pipeline 
+> construct skeleton** for automated deployment. The application stack supports environment-specific 
+> behavior through CDK context, and a PipelineStack provides the foundation for CI/CD deployment 
+> across environments. S3 buckets, EventBridge rule, Step Functions state machine with DynamoDB 
+> metadata integration, Lambda function with input validation, Polly integration, SNS notifications, 
+> and comprehensive error handling are all wired together. This document is the **single source of 
+> truth** for the Event-Driven Sleep Audio Pipeline. Every subsequent issue must keep this file — 
+> and its Mermaid diagram — in sync with the implementation under strict TDD.
 
 ## 1. High-Level Overview
 
@@ -32,7 +35,9 @@ Core design principles:
   buckets with all public access blocked.
 - **Observable by default** — structured CloudWatch logs, metrics, and alarms on every stage.
 - **Multi-environment** — `dev`, `stage`, and `prod` are selected through CDK context so the
-  same code deploys to every environment.
+  same code deploys to every environment (Issue #9).
+- **Automated deployment** — CDK Pipelines construct provides foundation for CI/CD deployment 
+  across environments (Issue #9).
 - **Input validation** (Issue #8) — Lambda function validates all inputs (required fields, 
   file extensions) before processing, ensuring data quality and early error detection.
 
@@ -177,12 +182,83 @@ feed the Step Functions state machine with transformed S3 event data. The state 
 - ✓ Error details captured in DynamoDB and SNS notifications
 - ✓ End-to-end flow fully tested (46 passing tests)
 
+**Key additions in Issue #9:**
+- ✓ Multi-environment support (dev/stage/prod via context)
+- ✓ Environment-specific removal policies and tagging
+- ✓ CDK Pipeline construct skeleton for automated deployment
+- ✓ Enhanced test coverage (59 passing tests)
+
 The Lambda function (SleepAudioProcessor) serves as a placeholder for future audio processing logic 
 including validation, metadata extraction, and enrichment. Both SNS topics are encrypted with KMS 
 and send structured messages with metadata. Future states (Bedrock enhancement, persistence) are 
 shown with dashed borders to indicate planned architecture.
 
-## 3.1. Implemented Components (Issues #3, #4, #5, #6, and #7)
+## 3.2. Deployment Architecture (Issue #9)
+
+The following diagram shows the **automated deployment pipeline** structure:
+
+```mermaid
+flowchart TB
+    subgraph GitHub["GitHub Repository"]
+        Source[("Source Code<br/>obstreperous-ai/<br/>cdk-sleep-java-copilot")]
+    end
+
+    subgraph Pipeline["CDK Pipeline (PipelineStack)"]
+        direction TB
+        SourceStage["Source Stage<br/>GitHub Connection"]
+        SynthStage["Synth Stage<br/>mvn compile<br/>cdk synth"]
+        
+        subgraph DevDeploy["Dev Deployment"]
+            DevStack["CdkBaseStack-dev<br/>Environment: dev<br/>RemovalPolicy: DESTROY"]
+        end
+        
+        subgraph StageDeploy["Stage Deployment"]
+            StageStack["CdkBaseStack-stage<br/>Environment: stage<br/>RemovalPolicy: DESTROY"]
+        end
+        
+        subgraph ProdDeploy["Prod Deployment"]
+            ProdStack["CdkBaseStack-prod<br/>Environment: prod<br/>RemovalPolicy: RETAIN"]
+        end
+        
+        SourceStage --> SynthStage
+        SynthStage --> DevStack
+        DevStack --> StageStack
+        StageStack --> ProdStack
+    end
+
+    Source -->|Push to main| SourceStage
+
+    subgraph Environments["AWS Environments"]
+        direction LR
+        DevEnv["Dev Environment<br/>Account: dev-account<br/>Region: dev-region<br/>Tags: Environment=dev"]
+        StageEnv["Stage Environment<br/>Account: stage-account<br/>Region: stage-region<br/>Tags: Environment=stage"]
+        ProdEnv["Prod Environment<br/>Account: prod-account<br/>Region: prod-region<br/>Tags: Environment=prod"]
+    end
+
+    DevStack -.->|Deploys to| DevEnv
+    StageStack -.->|Deploys to| StageEnv
+    ProdStack -.->|Deploys to| ProdEnv
+
+    style DevStack fill:#90EE90
+    style StageStack fill:#FFD700
+    style ProdStack fill:#FF6B6B
+```
+
+**Deployment Flow:**
+1. Developer pushes code to GitHub main branch
+2. **Source Stage**: Pipeline pulls latest code from GitHub
+3. **Synth Stage**: Compiles Java code and synthesizes CDK templates
+4. **Dev Deploy**: Automatically deploys to dev environment (Environment=dev, RemovalPolicy=DESTROY)
+5. **Stage Deploy**: Automatically deploys to stage environment (Environment=stage, RemovalPolicy=DESTROY)
+6. **Prod Deploy**: Automatically deploys to prod environment (Environment=prod, RemovalPolicy=RETAIN)
+
+**Future Enhancements:**
+- Manual approval gates before prod deployment
+- Integration tests between stages
+- Automated rollback on deployment failures
+- CloudWatch alarms as deployment gates
+
+## 3.1. Implemented Components (Issues #3, #4, #5, #6, #7, and #8)
 
 The following foundational resources are now implemented:
 
@@ -191,13 +267,23 @@ The following foundational resources are now implemented:
 - **Versioning**: Enabled to track all changes and support reprocessing
 - **Public Access**: Fully blocked (all 4 public access settings enabled)
 - **EventBridge Notifications**: Enabled to emit S3 Object Created events to EventBridge
-- **Removal Policy**: RETAIN to prevent accidental deletion
+- **Removal Policy** (Issue #9): Environment-specific
+  - **Dev/Stage**: DESTROY (for easy cleanup)
+  - **Prod**: RETAIN (to prevent accidental deletion)
+- **Tags** (Issue #9):
+  - `Environment`: dev/stage/prod (based on context)
+  - `Project`: SleepAudioPipeline
 
 ### Output S3 Bucket (`SleepAudioOutputBucket`)
 - **Encryption**: S3-managed encryption (AES256) for data at rest
 - **Versioning**: Enabled to preserve all processed audio versions
 - **Public Access**: Fully blocked (all 4 public access settings enabled)
-- **Removal Policy**: RETAIN to prevent accidental deletion
+- **Removal Policy** (Issue #9): Environment-specific
+  - **Dev/Stage**: DESTROY (for easy cleanup)
+  - **Prod**: RETAIN (to prevent accidental deletion)
+- **Tags** (Issue #9):
+  - `Environment`: dev/stage/prod (based on context)
+  - `Project`: SleepAudioPipeline
 
 ### EventBridge Rule (`S3ObjectCreatedRule`)
 - **Event Pattern**: Triggers on `Object Created` events from the Input Bucket
@@ -270,7 +356,12 @@ The following foundational resources are now implemented:
 - **Billing Mode**: PAY_PER_REQUEST (on-demand) for cost efficiency and zero-scaling
 - **Encryption**: AWS-managed encryption at rest for security
 - **Point-in-Time Recovery**: Enabled for data protection and recovery capability
-- **Removal Policy**: RETAIN to prevent accidental data loss
+- **Removal Policy** (Issue #9): Environment-specific
+  - **Dev/Stage**: DESTROY (for easy cleanup)
+  - **Prod**: RETAIN (to prevent accidental data loss)
+- **Tags** (Issue #9):
+  - `Environment`: dev/stage/prod (based on context)
+  - `Project`: SleepAudioPipeline
 - **Attributes** (stored in item):
   - `audioId`: Unique identifier (S3 object key)
   - `status`: Current processing status (PROCESSING, COMPLETED, FAILED) — Issues #5 and #6
@@ -469,13 +560,118 @@ to by email, Lambda, SQS, or other AWS services for downstream processing or ale
 - **Right-sized environments** — `dev` and `stage` can run with reduced alarms/retention while
   `prod` uses the full configuration.
 
-## 8. Multi-Environment Support
+## 8. Multi-Environment Support (Issue #9)
 
-Environments (`dev`, `stage`, `prod`) are selected through **CDK context** (for example
-`cdk synth -c env=dev`). The same stack code deploys to every environment, with per-environment
-values (resource names, alarm thresholds, retention, and whether Bedrock is enabled) resolved
-from context. This keeps environments consistent while allowing safe, isolated promotion of
-changes.
+The application now supports **multiple environments** (`dev`, `stage`, `prod`) through CDK context.
+The same stack code deploys to every environment with environment-specific configurations.
+
+### Environment Selection
+
+Environments are selected via CDK context:
+```bash
+# Deploy to dev environment
+cdk synth -c environment=dev
+
+# Deploy to stage environment
+cdk synth -c environment=stage
+
+# Deploy to prod environment
+cdk synth -c environment=prod
+```
+
+If no environment is specified, the stack defaults to `dev`.
+
+### Environment-Specific Configuration (Issue #9)
+
+The stack applies different configurations based on the environment:
+
+#### Resource Tagging
+All resources are tagged with:
+- **Environment**: `dev`, `stage`, or `prod` (based on context)
+- **Project**: `SleepAudioPipeline`
+
+Tags enable:
+- Cost tracking and allocation by environment
+- Resource organization and filtering
+- Policy enforcement (e.g., require Environment tag)
+
+#### Removal Policies
+Resources use environment-specific removal policies for data protection:
+
+| Environment | Removal Policy | Rationale |
+|-------------|---------------|-----------|
+| **dev** | DESTROY | Allows easy cleanup of development resources; data is not production-critical |
+| **stage** | DESTROY | Allows easy cleanup of staging resources; data is for testing |
+| **prod** | RETAIN | Prevents accidental deletion of production data; requires manual cleanup |
+
+Affected resources:
+- S3 Input Bucket (`SleepAudioInputBucket`)
+- S3 Output Bucket (`SleepAudioOutputBucket`)
+- DynamoDB Metadata Table (`SleepAudioMetadataTable`)
+
+#### Stack Naming
+Stacks include the environment in their name for uniqueness:
+- `CdkBaseStack-dev`
+- `CdkBaseStack-stage`
+- `CdkBaseStack-prod`
+
+This allows multiple environments to coexist in the same AWS account and region.
+
+### CDK Pipelines Integration (Issue #9)
+
+A **PipelineStack** construct provides the foundation for automated CI/CD deployment across
+environments. The pipeline:
+
+1. **Source Stage**: Pulls code from GitHub repository
+2. **Synth Stage**: Builds and synthesizes the CDK application (`mvn compile`, `cdk synth`)
+3. **Deploy Stages**: Deploys to dev, stage, and prod environments in sequence
+
+#### PipelineStack Configuration
+
+The pipeline stack supports environment-specific deployment configurations through CDK context:
+
+```json
+{
+  "dev-account": "123456789012",
+  "dev-region": "us-east-1",
+  "stage-account": "123456789012",
+  "stage-region": "us-east-1",
+  "prod-account": "987654321098",
+  "prod-region": "us-east-1"
+}
+```
+
+If account/region context is not provided, the pipeline falls back to `CDK_DEFAULT_ACCOUNT` and
+`CDK_DEFAULT_REGION` environment variables.
+
+#### Deployment Flow
+
+```
+GitHub Source → Build & Synth → Deploy Dev → Deploy Stage → Deploy Prod
+```
+
+- **Dev**: Automatic deployment on every commit to main branch
+- **Stage**: Automatic deployment after dev succeeds
+- **Prod**: Automatic deployment after stage succeeds
+  - Future enhancement: Add manual approval step before prod deployment
+
+#### Future Enhancements
+The PipelineStack is currently a skeleton implementation. Future issues will add:
+- Manual approval steps for production deployments
+- Integration tests between deployment stages
+- CloudWatch alarms as deployment gates
+- Rollback capabilities on failure
+- Cross-account deployment support
+- Branch-based deployments (feature branches → ephemeral environments)
+
+### Environment Configuration Best Practices
+
+1. **Use context for environment selection**: Always specify `-c environment=<env>` when deploying
+2. **Isolate environments**: Deploy different environments to separate AWS accounts when possible
+3. **Tag consistently**: Environment and Project tags are automatically applied to all resources
+4. **Protect production data**: Prod environment uses RETAIN policy; requires manual cleanup
+5. **Test in stage first**: Always deploy and test in stage environment before prod
+6. **Document environment differences**: Update this section when adding environment-specific config
 
 ## 9. Future Extensibility
 

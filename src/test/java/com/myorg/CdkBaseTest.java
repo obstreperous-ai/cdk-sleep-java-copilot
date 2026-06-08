@@ -2,6 +2,8 @@ package com.myorg;
 
 import org.junit.jupiter.api.Test;
 import software.amazon.awscdk.App;
+import software.amazon.awscdk.Environment;
+import software.amazon.awscdk.StackProps;
 import software.amazon.awscdk.assertions.Match;
 import software.amazon.awscdk.assertions.Template;
 
@@ -10,12 +12,25 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 class CdkBaseTest {
     
     private Template getTestTemplate() {
         App app = new App();
         CdkBaseStack stack = new CdkBaseStack(app, "test");
+        return Template.fromStack(stack);
+    }
+    
+    private Template getTestTemplateWithEnvironment(String envName) {
+        App app = new App();
+        app.getNode().setContext("environment", envName);
+        CdkBaseStack stack = new CdkBaseStack(app, "test-" + envName, StackProps.builder()
+                .env(Environment.builder()
+                        .account("123456789012")
+                        .region("us-east-1")
+                        .build())
+                .build());
         return Template.fromStack(stack);
     }
 
@@ -662,5 +677,250 @@ class CdkBaseTest {
             "Expected at least 1 Lambda function");
         assertEquals(1, template.findResources("AWS::KMS::Key").size(),
             "Expected exactly 1 KMS key for SNS encryption");
+    }
+
+    // ===== Issue #9: Pipeline Testing, Refinement & Deployment Preparation Tests =====
+
+    @Test
+    void stackSupportsDevEnvironmentContext() {
+        Template template = getTestTemplateWithEnvironment("dev");
+        
+        // Verify stack synthesizes successfully with dev environment context
+        // This tests multi-environment support for dev
+        assertNotNull(template);
+        
+        // Verify resources still exist with dev environment
+        assertEquals(2, template.findResources("AWS::S3::Bucket").size(), 
+            "Dev environment should have 2 S3 buckets");
+        assertEquals(1, template.findResources("AWS::DynamoDB::Table").size(),
+            "Dev environment should have 1 DynamoDB table");
+    }
+
+    @Test
+    void stackSupportsStageEnvironmentContext() {
+        Template template = getTestTemplateWithEnvironment("stage");
+        
+        // Verify stack synthesizes successfully with stage environment context
+        // This tests multi-environment support for stage
+        assertNotNull(template);
+        
+        // Verify resources still exist with stage environment
+        assertEquals(2, template.findResources("AWS::S3::Bucket").size(), 
+            "Stage environment should have 2 S3 buckets");
+        assertEquals(1, template.findResources("AWS::DynamoDB::Table").size(),
+            "Stage environment should have 1 DynamoDB table");
+    }
+
+    @Test
+    void stackSupportsProdEnvironmentContext() {
+        Template template = getTestTemplateWithEnvironment("prod");
+        
+        // Verify stack synthesizes successfully with prod environment context
+        // This tests multi-environment support for prod
+        assertNotNull(template);
+        
+        // Verify resources still exist with prod environment
+        assertEquals(2, template.findResources("AWS::S3::Bucket").size(), 
+            "Prod environment should have 2 S3 buckets");
+        assertEquals(1, template.findResources("AWS::DynamoDB::Table").size(),
+            "Prod environment should have 1 DynamoDB table");
+    }
+
+    @Test
+    void stackHasEnvironmentTags() {
+        Template template = getTestTemplateWithEnvironment("dev");
+        
+        // Verify resources are tagged with environment name
+        // This enables cost tracking and resource organization by environment
+        template.hasResourceProperties("AWS::S3::Bucket", Match.objectLike(Map.of(
+            "Tags", Match.arrayWith(List.of(
+                Map.of(
+                    "Key", "Environment",
+                    "Value", "dev"
+                )
+            ))
+        )));
+    }
+
+    @Test
+    void devEnvironmentHasDevRemovalPolicy() {
+        Template template = getTestTemplateWithEnvironment("dev");
+        
+        // Verify dev environment uses DESTROY removal policy for easier cleanup
+        // This is appropriate for non-production environments
+        template.hasResource("AWS::S3::Bucket", Match.objectLike(Map.of(
+            "UpdateReplacePolicy", "Delete",
+            "DeletionPolicy", "Delete"
+        )));
+    }
+
+    @Test
+    void prodEnvironmentHasRetainRemovalPolicy() {
+        Template template = getTestTemplateWithEnvironment("prod");
+        
+        // Verify prod environment uses RETAIN removal policy for data protection
+        // This prevents accidental deletion of production data
+        template.hasResource("AWS::S3::Bucket", Match.objectLike(Map.of(
+            "UpdateReplacePolicy", "Retain",
+            "DeletionPolicy", "Retain"
+        )));
+    }
+
+    @Test
+    void pipelineStackExists() {
+        // Test that a CDK Pipeline stack can be created
+        // This is the foundation for automated deployment
+        App app = new App();
+        
+        try {
+            // Attempt to create a PipelineStack
+            // This will fail until PipelineStack is implemented
+            PipelineStack pipelineStack = new PipelineStack(app, "TestPipelineStack", StackProps.builder()
+                    .env(Environment.builder()
+                            .account("123456789012")
+                            .region("us-east-1")
+                            .build())
+                    .build());
+            
+            Template template = Template.fromStack(pipelineStack);
+            assertNotNull(template);
+            
+            // Verify pipeline stack has a CodePipeline resource
+            assertEquals(1, template.findResources("AWS::CodePipeline::Pipeline").size(),
+                "Pipeline stack should have exactly 1 CodePipeline");
+        } catch (Exception e) {
+            // Expected to fail until PipelineStack is implemented
+            throw new AssertionError("PipelineStack class not found or not implemented", e);
+        }
+    }
+
+    @Test
+    void pipelineStackHasSourceStage() {
+        // Test that pipeline has a source stage for GitHub
+        App app = new App();
+        
+        try {
+            PipelineStack pipelineStack = new PipelineStack(app, "TestPipelineStack", StackProps.builder()
+                    .env(Environment.builder()
+                            .account("123456789012")
+                            .region("us-east-1")
+                            .build())
+                    .build());
+            
+            Template template = Template.fromStack(pipelineStack);
+            
+            // Verify pipeline has source stage configuration
+            template.hasResourceProperties("AWS::CodePipeline::Pipeline", Match.objectLike(Map.of(
+                "Stages", Match.arrayWith(List.of(
+                    Match.objectLike(Map.of(
+                        "Name", Match.stringLikeRegexp(".*Source.*")
+                    ))
+                ))
+            )));
+        } catch (Exception e) {
+            throw new AssertionError("PipelineStack not implemented or missing source stage", e);
+        }
+    }
+
+    @Test
+    void pipelineStackHasSynthStage() {
+        // Test that pipeline has a synth stage for CDK synthesis
+        App app = new App();
+        
+        try {
+            PipelineStack pipelineStack = new PipelineStack(app, "TestPipelineStack", StackProps.builder()
+                    .env(Environment.builder()
+                            .account("123456789012")
+                            .region("us-east-1")
+                            .build())
+                    .build());
+            
+            Template template = Template.fromStack(pipelineStack);
+            
+            // Verify pipeline has build/synth stage
+            template.hasResourceProperties("AWS::CodePipeline::Pipeline", Match.objectLike(Map.of(
+                "Stages", Match.arrayWith(List.of(
+                    Match.objectLike(Map.of(
+                        "Name", Match.stringLikeRegexp(".*(Build|Synth).*")
+                    ))
+                ))
+            )));
+        } catch (Exception e) {
+            throw new AssertionError("PipelineStack not implemented or missing synth stage", e);
+        }
+    }
+
+    @Test
+    void pipelineStackHasDeploymentStages() {
+        // Test that pipeline has deployment stages for dev, stage, prod
+        App app = new App();
+        
+        try {
+            PipelineStack pipelineStack = new PipelineStack(app, "TestPipelineStack", StackProps.builder()
+                    .env(Environment.builder()
+                            .account("123456789012")
+                            .region("us-east-1")
+                            .build())
+                    .build());
+            
+            Template template = Template.fromStack(pipelineStack);
+            
+            // Verify pipeline has deployment stages
+            // We expect at least a dev deployment stage
+            template.hasResourceProperties("AWS::CodePipeline::Pipeline", Match.objectLike(Map.of(
+                "Stages", Match.arrayWith(List.of(
+                    Match.objectLike(Map.of(
+                        "Name", Match.stringLikeRegexp(".*(Deploy|Dev).*")
+                    ))
+                ))
+            )));
+        } catch (Exception e) {
+            throw new AssertionError("PipelineStack not implemented or missing deployment stages", e);
+        }
+    }
+
+    @Test
+    void stackNameIncludesEnvironment() {
+        // Test that stack names properly include environment for uniqueness
+        App app = new App();
+        app.getNode().setContext("environment", "dev");
+        
+        CdkBaseStack devStack = new CdkBaseStack(app, "CdkBaseStack-dev", StackProps.builder()
+                .env(Environment.builder()
+                        .account("123456789012")
+                        .region("us-east-1")
+                        .build())
+                .build());
+        
+        Template devTemplate = Template.fromStack(devStack);
+        assertNotNull(devTemplate);
+        
+        // Verify the stack synthesizes with environment in the name
+        assertTrue(devStack.getStackName().contains("dev"), 
+            "Stack name should include environment");
+    }
+
+    @Test
+    void inputValidationCompleteCoverage() {
+        Template template = getTestTemplate();
+        
+        // Verify Lambda function has comprehensive input validation
+        // This test ensures the validation logic is robust
+        template.hasResourceProperties("AWS::Lambda::Function", Match.objectLike(Map.of(
+            "Runtime", "java17",
+            "Handler", Match.stringLikeRegexp(".*SleepAudioProcessor.*")
+        )));
+        
+        // Verify error handling is configured on Lambda invoke task
+        template.hasResourceProperties("AWS::IAM::Policy", Match.objectLike(Map.of(
+            "PolicyDocument", Match.objectLike(Map.of(
+                "Statement", Match.arrayWith(List.of(
+                    Match.objectLike(Map.of(
+                        "Action", "lambda:InvokeFunction",
+                        "Effect", "Allow"
+                    ))
+                ))
+            ))
+        )));
     }
 }

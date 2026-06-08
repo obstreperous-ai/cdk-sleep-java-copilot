@@ -5,6 +5,7 @@ import software.amazon.awscdk.Stack;
 import software.amazon.awscdk.StackProps;
 import software.amazon.awscdk.RemovalPolicy;
 import software.amazon.awscdk.Duration;
+import software.amazon.awscdk.Tags;
 import software.amazon.awscdk.services.s3.Bucket;
 import software.amazon.awscdk.services.s3.BucketEncryption;
 import software.amazon.awscdk.services.s3.BlockPublicAccess;
@@ -69,13 +70,28 @@ public class CdkBaseStack extends Stack {
     public CdkBaseStack(final Construct scope, final String id, final StackProps props) {
         super(scope, id, props);
 
+        // Issue #9: Multi-environment support
+        // Get environment from context (dev, stage, prod), default to "dev"
+        String environment = (String) this.getNode().tryGetContext("environment");
+        if (environment == null || environment.isEmpty()) {
+            environment = "dev";
+        }
+
+        // Issue #9: Environment-specific removal policy
+        // Dev environments use DESTROY for easy cleanup, prod uses RETAIN for data protection
+        RemovalPolicy removalPolicy = environment.equals("prod") ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY;
+
+        // Issue #9: Apply environment tag to all resources in stack
+        Tags.of(this).add("Environment", environment);
+        Tags.of(this).add("Project", "SleepAudioPipeline");
+
         // Input S3 Bucket - for raw audio uploads
         Bucket inputBucket = Bucket.Builder.create(this, "SleepAudioInputBucket")
                 .encryption(BucketEncryption.S3_MANAGED)
                 .versioned(true)
                 .eventBridgeEnabled(true)
                 .blockPublicAccess(BlockPublicAccess.BLOCK_ALL)
-                .removalPolicy(RemovalPolicy.RETAIN)
+                .removalPolicy(removalPolicy)
                 .build();
 
         // Output S3 Bucket - for processed audio
@@ -83,7 +99,7 @@ public class CdkBaseStack extends Stack {
                 .encryption(BucketEncryption.S3_MANAGED)
                 .versioned(true)
                 .blockPublicAccess(BlockPublicAccess.BLOCK_ALL)
-                .removalPolicy(RemovalPolicy.RETAIN)
+                .removalPolicy(removalPolicy)
                 .build();
 
         // DynamoDB Table - for audio pipeline metadata (Issue #5)
@@ -95,7 +111,7 @@ public class CdkBaseStack extends Stack {
                 .billingMode(BillingMode.PAY_PER_REQUEST)
                 .encryption(TableEncryption.AWS_MANAGED)
                 .pointInTimeRecovery(true)  // Deprecated but works; will migrate in future
-                .removalPolicy(RemovalPolicy.RETAIN)
+                .removalPolicy(removalPolicy)
                 .build();
 
         // KMS Key for SNS Topic Encryption (Issue #6)

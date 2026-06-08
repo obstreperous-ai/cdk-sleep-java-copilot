@@ -36,6 +36,7 @@ import software.amazon.awscdk.services.dynamodb.Attribute;
 import software.amazon.awscdk.services.dynamodb.AttributeType;
 import software.amazon.awscdk.services.dynamodb.BillingMode;
 import software.amazon.awscdk.services.dynamodb.TableEncryption;
+import software.amazon.awscdk.services.dynamodb.PointInTimeRecoverySpecification;
 import software.amazon.awscdk.services.sns.Topic;
 import software.amazon.awscdk.services.kms.Key;
 import software.amazon.awscdk.services.lambda.Function;
@@ -102,7 +103,7 @@ public class CdkBaseStack extends Stack {
                 .removalPolicy(removalPolicy)
                 .build();
 
-        // DynamoDB Table - for audio pipeline metadata (Issue #5)
+        // DynamoDB Table - for audio pipeline metadata (Issue #5, #9)
         Table metadataTable = Table.Builder.create(this, "SleepAudioMetadataTable")
                 .partitionKey(Attribute.builder()
                         .name("audioId")
@@ -110,7 +111,9 @@ public class CdkBaseStack extends Stack {
                         .build())
                 .billingMode(BillingMode.PAY_PER_REQUEST)
                 .encryption(TableEncryption.AWS_MANAGED)
-                .pointInTimeRecovery(true)  // Deprecated but works; will migrate in future
+                .pointInTimeRecoverySpecification(PointInTimeRecoverySpecification.builder()
+                        .pointInTimeRecoveryEnabled(true)
+                        .build())  // Issue #9: Updated from deprecated pointInTimeRecovery
                 .removalPolicy(removalPolicy)
                 .build();
 

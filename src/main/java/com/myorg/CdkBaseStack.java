@@ -26,6 +26,7 @@ import software.amazon.awscdk.services.stepfunctions.Succeed;
 import software.amazon.awscdk.services.stepfunctions.Fail;
 import software.amazon.awscdk.services.stepfunctions.Errors;
 import software.amazon.awscdk.services.stepfunctions.CatchProps;
+import software.amazon.awscdk.services.stepfunctions.RetryProps;
 import software.amazon.awscdk.services.stepfunctions.tasks.SnsPublish;
 import software.amazon.awscdk.services.stepfunctions.tasks.DynamoUpdateItem;
 import software.amazon.awscdk.services.stepfunctions.TaskInput;
@@ -42,6 +43,12 @@ import software.amazon.awscdk.services.kms.Key;
 import software.amazon.awscdk.services.lambda.Function;
 import software.amazon.awscdk.services.lambda.Runtime;
 import software.amazon.awscdk.services.lambda.Code;
+import software.amazon.awscdk.services.lambda.Tracing;
+import software.amazon.awscdk.services.cloudwatch.Alarm;
+import software.amazon.awscdk.services.cloudwatch.ComparisonOperator;
+import software.amazon.awscdk.services.cloudwatch.TreatMissingData;
+import software.amazon.awscdk.services.cloudwatch.Metric;
+import software.amazon.awscdk.services.cloudwatch.Unit;
 
 import java.util.List;
 import java.util.Map;
@@ -143,6 +150,7 @@ public class CdkBaseStack extends Stack {
 
         // DynamoDB PutItem Task - Write initial metadata record (Issue #5)
         // This writes the initial record when the pipeline starts
+        // Issue #10: Retry policy configured for transient failures
         DynamoPutItem putMetadataTask = DynamoPutItem.Builder.create(this, "PutMetadataTask")
                 .table(metadataTable)
                 .item(Map.of(
@@ -154,9 +162,23 @@ public class CdkBaseStack extends Stack {
                 ))
                 .resultPath("$.dynamoResult")
                 .build();
+        
+        // Issue #10: Add retry policy for DynamoDB transient errors
+        putMetadataTask.addRetry(RetryProps.builder()
+                .errors(List.of(
+                    "DynamoDB.ProvisionedThroughputExceededException",
+                    "DynamoDB.RequestLimitExceeded",
+                    "DynamoDB.InternalServerError",
+                    "States.Timeout"
+                ))
+                .interval(Duration.seconds(2))
+                .maxAttempts(3)
+                .backoffRate(2.0)
+                .build());
 
         // Lambda Function - Sleep Audio Processor (Issue #7)
         // Basic skeleton for audio processing, metadata enrichment, and validation
+        // Issue #10: X-Ray tracing enabled for observability
         Function audioProcessorFunction = Function.Builder.create(this, "SleepAudioProcessorFunction")
                 .functionName("SleepAudioProcessor")
                 .runtime(Runtime.JAVA_17)
@@ -164,6 +186,7 @@ public class CdkBaseStack extends Stack {
                 .code(Code.fromAsset("target/classes"))
                 .timeout(Duration.seconds(30))
                 .memorySize(512)
+                .tracing(Tracing.ACTIVE)  // Issue #10: Enable X-Ray tracing
                 .environment(Map.of(
                     "METADATA_TABLE_NAME", metadataTable.getTableName()
                 ))
@@ -175,15 +198,30 @@ public class CdkBaseStack extends Stack {
         // Lambda Invoke Task - Process audio metadata (Issue #7)
         // This task invokes the Lambda function to validate and enrich metadata
         // By default, LambdaInvoke passes the entire state input to the Lambda
+        // Issue #10: Retry policy configured for transient Lambda failures
         LambdaInvoke processAudioTask = LambdaInvoke.Builder.create(this, "ProcessAudioTask")
                 .lambdaFunction(audioProcessorFunction)
                 .resultPath("$.processorResult")
                 .build();
+        
+        // Issue #10: Add retry policy for Lambda service errors with exponential backoff
+        processAudioTask.addRetry(RetryProps.builder()
+                .errors(List.of(
+                    "Lambda.ServiceException",
+                    "Lambda.TooManyRequestsException",
+                    "Lambda.SdkClientException",
+                    "States.Timeout"
+                ))
+                .interval(Duration.seconds(2))
+                .maxAttempts(3)
+                .backoffRate(2.0)
+                .build());
 
         // Polly Task - Minimal integration using CallAwsService
         // This is a placeholder that will invoke Polly StartSpeechSynthesisTask
         // NOTE: iamResources uses wildcard for initial development (Issue #4)
         // TODO: Scope to specific resources before production (e.g., output bucket ARN, specific Polly task ARNs)
+        // Issue #10: Retry policy configured for transient Polly failures
         CallAwsService pollyTask = CallAwsService.Builder.create(this, "PollyTask")
                 .service("polly")
                 .action("startSpeechSynthesisTask")
@@ -196,6 +234,18 @@ public class CdkBaseStack extends Stack {
                 .iamResources(List.of("*"))  // Broad permissions for development; narrow before production
                 .resultPath("$.pollyResult")
                 .build();
+        
+        // Issue #10: Add retry policy for Polly service errors with exponential backoff
+        pollyTask.addRetry(RetryProps.builder()
+                .errors(List.of(
+                    "Polly.ServiceException",
+                    "Polly.ThrottlingException",
+                    "States.Timeout"
+                ))
+                .interval(Duration.seconds(3))
+                .maxAttempts(3)
+                .backoffRate(2.0)
+                .build());
 
         // DynamoDB UpdateItem Task - Update status to COMPLETED (Issue #6)
         DynamoUpdateItem updateStatusToCompleted = DynamoUpdateItem.Builder.create(this, "UpdateStatusToCompleted")
@@ -303,6 +353,7 @@ public class CdkBaseStack extends Stack {
         putMetadataTask.next(processAudioTask).next(pollyTask).next(updateStatusToCompleted);
 
         // Step Functions State Machine
+        // Issue #10: X-Ray tracing enabled for end-to-end observability
         StateMachine stateMachine = StateMachine.Builder.create(this, "SleepAudioPipelineStateMachine")
                 .stateMachineName("SleepAudioPipelineStateMachine")
                 .stateMachineType(StateMachineType.STANDARD)
@@ -312,6 +363,7 @@ public class CdkBaseStack extends Stack {
                         .level(LogLevel.ALL)
                         .includeExecutionData(true)
                         .build())
+                .tracingEnabled(true)  // Issue #10: Enable X-Ray tracing
                 .build();
 
         // Grant the state machine permissions to write to the output bucket
@@ -323,6 +375,50 @@ public class CdkBaseStack extends Stack {
         // Grant the state machine permissions to publish to SNS topics (Issue #6)
         completedTopic.grantPublish(stateMachine);
         failedTopic.grantPublish(stateMachine);
+
+        // Issue #10: CloudWatch Alarms for critical failure paths and observability
+        
+        // Alarm for State Machine execution failures
+        Alarm stateMachineFailureAlarm = Alarm.Builder.create(this, "StateMachineExecutionFailureAlarm")
+                .alarmName("SleepAudioPipeline-StateMachineFailures")
+                .alarmDescription("Triggers when Step Functions state machine executions fail")
+                .metric(stateMachine.metricFailed(software.amazon.awscdk.services.cloudwatch.MetricOptions.builder()
+                        .statistic("Sum")
+                        .period(Duration.minutes(5))
+                        .build()))
+                .threshold(1)
+                .evaluationPeriods(1)
+                .comparisonOperator(ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD)
+                .treatMissingData(TreatMissingData.NOT_BREACHING)
+                .build();
+        
+        // Alarm for Lambda function errors
+        Alarm lambdaErrorAlarm = Alarm.Builder.create(this, "LambdaErrorAlarm")
+                .alarmName("SleepAudioPipeline-LambdaErrors")
+                .alarmDescription("Triggers when Lambda function encounters errors")
+                .metric(audioProcessorFunction.metricErrors(software.amazon.awscdk.services.cloudwatch.MetricOptions.builder()
+                        .statistic("Sum")
+                        .period(Duration.minutes(5))
+                        .build()))
+                .threshold(1)
+                .evaluationPeriods(1)
+                .comparisonOperator(ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD)
+                .treatMissingData(TreatMissingData.NOT_BREACHING)
+                .build();
+        
+        // Alarm for Lambda function throttles (additional observability)
+        Alarm lambdaThrottleAlarm = Alarm.Builder.create(this, "LambdaThrottleAlarm")
+                .alarmName("SleepAudioPipeline-LambdaThrottles")
+                .alarmDescription("Triggers when Lambda function is throttled")
+                .metric(audioProcessorFunction.metricThrottles(software.amazon.awscdk.services.cloudwatch.MetricOptions.builder()
+                        .statistic("Sum")
+                        .period(Duration.minutes(5))
+                        .build()))
+                .threshold(5)
+                .evaluationPeriods(1)
+                .comparisonOperator(ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD)
+                .treatMissingData(TreatMissingData.NOT_BREACHING)
+                .build();
 
         // EventBridge Rule - triggers on S3 Object Created events from input bucket
         Rule eventRule = Rule.Builder.create(this, "S3ObjectCreatedRule")

@@ -36,5 +36,14 @@ jobs:
       - name: Run Maven tests
         run: mvn --batch-mode test
 
-      - name: Run CDK synth
+      - name: Run CDK synth (default environment)
         run: cdk synth
+
+      - name: Test multi-environment support - dev
+        run: cdk synth -c environment=dev
+
+      - name: Test multi-environment support - stage
+        run: cdk synth -c environment=stage
+
+      - name: Test multi-environment support - prod
+        run: cdk synth -c environment=prod

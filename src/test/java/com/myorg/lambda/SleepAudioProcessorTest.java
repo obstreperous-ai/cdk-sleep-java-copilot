@@ -32,6 +32,8 @@ class SleepAudioProcessorTest {
         MockitoAnnotations.openMocks(this);
         processor = new SleepAudioProcessor();
         when(mockContext.getLogger()).thenReturn(mockLogger);
+        // Issue #10: Mock getAwsRequestId for structured logging
+        when(mockContext.getAwsRequestId()).thenReturn("test-request-id-12345");
     }
 
     // ===== Issue #8: Input Validation Tests (TDD - These should fail initially) =====

@@ -12,6 +12,7 @@
         <cdk.version>[2.255.0,3.0.0)</cdk.version>
         <constructs.version>[10.5.0,11.0.0)</constructs.version>
         <junit.version>5.7.1</junit.version>
+        <aws.sdk.version>2.20.26</aws.sdk.version>
     </properties>
 
     <build>
@@ -89,13 +90,13 @@
         <dependency>
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>s3</artifactId>
-            <version>2.20.26</version>
+            <version>${aws.sdk.version}</version>
         </dependency>
 
         <dependency>
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>dynamodb</artifactId>
-            <version>2.20.26</version>
+            <version>${aws.sdk.version}</version>
         </dependency>
 
     </dependencies>

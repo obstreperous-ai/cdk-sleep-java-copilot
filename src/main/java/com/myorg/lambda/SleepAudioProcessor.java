@@ -285,10 +285,19 @@ public class SleepAudioProcessor implements RequestHandler<Map<String, Object>, 
      * Issue #11: S3 upload implementation
      */
     private void uploadToS3(String bucketName, String objectKey, byte[] audioData) {
+        // Determine content type based on file extension
+        String contentType = "audio/mpeg";  // Default to MP3
+        String extension = getFileExtension(objectKey).toLowerCase();
+        if (".wav".equals(extension)) {
+            contentType = "audio/wav";
+        } else if (".m4a".equals(extension)) {
+            contentType = "audio/mp4";
+        }
+        
         PutObjectRequest putObjectRequest = PutObjectRequest.builder()
                 .bucket(bucketName)
                 .key(objectKey)
-                .contentType("audio/mpeg")  // Default to MP3, can be enhanced based on file type
+                .contentType(contentType)
                 .build();
         
         s3Client.putObject(putObjectRequest, RequestBody.fromBytes(audioData));

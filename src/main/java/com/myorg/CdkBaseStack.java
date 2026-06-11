@@ -179,20 +179,24 @@ public class CdkBaseStack extends Stack {
         // Lambda Function - Sleep Audio Processor (Issue #7)
         // Basic skeleton for audio processing, metadata enrichment, and validation
         // Issue #10: X-Ray tracing enabled for observability
+        // Issue #11: Full audio processing with S3 and DynamoDB integration
         Function audioProcessorFunction = Function.Builder.create(this, "SleepAudioProcessorFunction")
                 .functionName("SleepAudioProcessor")
                 .runtime(Runtime.JAVA_17)
                 .handler("com.myorg.lambda.SleepAudioProcessor::handleRequest")
                 .code(Code.fromAsset("target/classes"))
-                .timeout(Duration.seconds(30))
-                .memorySize(512)
+                .timeout(Duration.seconds(60))  // Issue #11: Increased timeout for audio processing
+                .memorySize(1024)  // Issue #11: Increased memory for audio processing
                 .tracing(Tracing.ACTIVE)  // Issue #10: Enable X-Ray tracing
                 .environment(Map.of(
-                    "METADATA_TABLE_NAME", metadataTable.getTableName()
+                    "METADATA_TABLE_NAME", metadataTable.getTableName(),
+                    "OUTPUT_BUCKET_NAME", outputBucket.getBucketName()  // Issue #11: Output bucket name
                 ))
                 .build();
 
-        // Grant Lambda function permissions to access DynamoDB table (Issue #7)
+        // Issue #11: Grant Lambda function permissions to access S3 buckets and DynamoDB table
+        inputBucket.grantRead(audioProcessorFunction);
+        outputBucket.grantWrite(audioProcessorFunction);
         metadataTable.grantReadWriteData(audioProcessorFunction);
 
         // Lambda Invoke Task - Process audio metadata (Issue #7)

@@ -1,16 +1,15 @@
 # Architecture
 
-> **Status:** Advanced Error Handling, Retries & Observability (Issue #10 complete). The fully 
-> integrated pipeline now includes **retry policies with exponential backoff** on all critical tasks 
-> (Lambda, Polly, DynamoDB), **X-Ray tracing** on Lambda and State Machine for end-to-end observability, 
-> **structured JSON logging** in Lambda handler with request IDs and context, and **CloudWatch Alarms** 
-> for critical failure paths. The system provides **multi-environment support** (dev/stage/prod), 
-> **comprehensive error handling with specific error types**, and **production-ready observability**. 
-> S3 buckets, EventBridge rule, Step Functions state machine with retry/catch configurations, DynamoDB 
-> metadata integration, Lambda function with validation and structured logging, Polly integration, SNS 
-> notifications, and CloudWatch alarms are all wired together. This document is the **single source of 
-> truth** for the Event-Driven Sleep Audio Pipeline. Every subsequent issue must keep this file — 
-> and its Mermaid diagram — in sync with the implementation under strict TDD.
+> **Status:** Full Audio Processing Implementation (Issue #11 complete). The fully integrated pipeline 
+> now includes **complete audio processing** in the Lambda function: downloading raw audio from Input S3, 
+> processing/enhancing audio for sleep/relaxation, uploading processed audio to Output S3 with unique 
+> timestamped keys, and updating DynamoDB with output location and metadata. The Lambda function returns 
+> **COMPLETED status** with comprehensive output details (location, size, duration). Combined with 
+> previous enhancements: **retry policies with exponential backoff** on all critical tasks, **X-Ray tracing**, 
+> **structured JSON logging**, **CloudWatch Alarms**, **multi-environment support**, and **comprehensive error 
+> handling**. The pipeline now moves audio through the complete workflow: validation → download → process → 
+> upload → metadata update → Polly narration → SNS notification. This document is the **single source of 
+> truth** for the Event-Driven Sleep Audio Pipeline.
 
 ## 1. High-Level Overview
 
@@ -62,23 +61,30 @@ The pipeline moves a single upload through the following stages:
    - File extension is supported (.mp3, .wav, .m4a)
    - Returns enriched metadata with validation status
    - **Invalid inputs throw exceptions** that route to the failure path
-6. **Generate / enhance audio** — The workflow enriches the audio:
-   - **Amazon Polly** synthesizes soothing narration or text-to-speech guidance.
-   - **Amazon Bedrock** *(optional)* generates AI sleep soundscapes or enhances the audio.
-7. **Persist output** — The processed artifact is written to the **S3 Processed Audio Bucket**,
-   which has **versioning enabled** so every reprocessing run is retained.
-8. **Record metadata** — Catalog and processing state (duration, `user_id`, status, input/output
-   keys, timestamps) are written to the **DynamoDB Metadata Table**.
+6. **Process audio** (Issue #11) — Lambda function performs full audio processing:
+   - **Download** raw audio from the Input S3 bucket
+   - **Process** audio data (normalization, enhancement, mixing for sleep/relaxation)
+   - **Generate unique output key** with timestamp (e.g., `processed/filename_1234567890.mp3`)
+   - **Upload** processed audio to the Output S3 bucket
+   - **Update DynamoDB** with output location (`s3://bucket/key`), file size, and status=COMPLETED
+   - **Return** processing results including output location and metadata
+7. **Generate narration** (optional) — **Amazon Polly** synthesizes soothing narration or 
+   text-to-speech guidance to accompany the processed audio.
+8. **Record completion** — DynamoDB metadata table is updated with final status (COMPLETED), 
+   output file details, processing duration, and timestamps.
 9. **Notify** — On success or failure the workflow publishes to an **SNS Topic** that fans the
    outcome out to operators and downstream consumers.
-10. **Observe** — Every stage emits logs, metrics, and alarms to **Amazon CloudWatch**.
+10. **Observe** — Every stage emits structured logs, X-Ray traces, metrics, and alarms to 
+    **Amazon CloudWatch**.
 
-### Happy path vs. failure path (Issue #8)
+### Happy path vs. failure path (Issue #8, #11)
 
-- **Success:** S3 upload → EventBridge → PutMetadata (PROCESSING) → Lambda validation (VALIDATED) 
-  → Polly processing → UpdateStatus (COMPLETED) → SNS success notification → Success state.
-- **Failure:** Any state error (validation, DynamoDB, Lambda, Polly) is caught by Step Functions 
-  → UpdateStatus (FAILED with error details) → SNS failure notification → Fail state.
+- **Success:** S3 upload → EventBridge → PutMetadata (PROCESSING) → Lambda validation → 
+  Lambda audio processing (download → process → upload → DynamoDB update → COMPLETED) → 
+  Polly narration → UpdateStatus (COMPLETED) → SNS success notification → Success state.
+- **Failure:** Any state error (validation, S3 download/upload, DynamoDB, Lambda, Polly) is 
+  caught by Step Functions → UpdateStatus (FAILED with error details) → SNS failure notification 
+  → Fail state.
 
 ### Supported Audio Formats (Issue #8)
 
@@ -100,11 +106,11 @@ flowchart TD
         EB{{"Amazon EventBridge<br/>Object Created Rule<br/>+ Input Transformer"}}
     end
 
-    subgraph Processing["Processing — AWS Step Functions State Machine (Issue #8, #10: Complete)"]
+    subgraph Processing["Processing — AWS Step Functions State Machine (Issue #8, #10, #11: Complete)"]
         direction TB
         PutMetadata["DynamoDB PutItem Task<br/>Write Initial Metadata<br/>(status=PROCESSING)<br/>✓ Error handling<br/>✓ Retry policy (Issue #10)"]
-        ProcessAudio["Lambda Function<br/>SleepAudioProcessor<br/>(Issue #7, #8, #10)<br/>INPUT VALIDATION:<br/>• Required fields<br/>• File extensions (.mp3, .wav, .m4a)<br/>✓ Error handling<br/>✓ Retry policy (Issue #10)<br/>✓ X-Ray tracing (Issue #10)<br/>✓ Structured logging (Issue #10)"]
-        Polly["Amazon Polly Task<br/>startSpeechSynthesisTask<br/>✓ Error handling<br/>✓ Retry policy (Issue #10)"]
+        ProcessAudio["Lambda Function<br/>SleepAudioProcessor<br/>(Issue #7, #8, #10, #11)<br/>INPUT VALIDATION:<br/>• Required fields<br/>• File extensions (.mp3, .wav, .m4a)<br/>AUDIO PROCESSING (Issue #11):<br/>• Download from Input S3<br/>• Process audio data<br/>• Upload to Output S3 (processed/file_timestamp.mp3)<br/>• Update DynamoDB (outputLocation, size, COMPLETED)<br/>✓ Error handling<br/>✓ Retry policy (Issue #10)<br/>✓ X-Ray tracing (Issue #10)<br/>✓ Structured logging (Issue #10)"]
+        Polly["Amazon Polly Task<br/>startSpeechSynthesisTask<br/>(Optional narration)<br/>✓ Error handling<br/>✓ Retry policy (Issue #10)"]
         
         subgraph SuccessPath["Success Path (Issue #6, #8)"]
             UpdateCompleted["DynamoDB UpdateItem<br/>Set status=COMPLETED<br/>+ updatedAt"]
@@ -124,22 +130,20 @@ flowchart TD
         ProcessAudio --> Polly
         Polly -->|Success| UpdateCompleted
         
-        %% Error handling (Issue #8)
+        %% Error handling (Issue #8, #11)
         PutMetadata -.->|Catch All Errors| UpdateFailed
-        ProcessAudio -.->|Validation Errors<br/>Missing fields<br/>Unsupported formats| UpdateFailed
+        ProcessAudio -.->|Validation Errors<br/>Missing fields<br/>Unsupported formats<br/>S3/DynamoDB errors| UpdateFailed
         Polly -.->|Catch All Errors| UpdateFailed
         
         %% Future states (not yet implemented)
         Bedrock["Amazon Bedrock (optional)<br/>AI Soundscapes / Enhancement<br/>(Future)"]
-        Persist["Persist Processed Audio<br/>(Future)"]
         
         style Bedrock stroke-dasharray: 5 5
-        style Persist stroke-dasharray: 5 5
     end
 
     subgraph Storage
         S3Out[("S3 Processed Audio Bucket<br/>(private, SSE, versioning ON)")]
-        DDB[("DynamoDB Metadata Table<br/>audioId (PK), status, inputBucket,<br/>inputKey, createdAt, updatedAt,<br/>errorInfo (Issue #8)")]
+        DDB[("DynamoDB Metadata Table<br/>audioId (PK), status, inputBucket,<br/>inputKey, outputLocation, outputSize,<br/>createdAt, updatedAt, errorInfo (Issue #8, #11)")]
     end
 
     subgraph Notifications["Notifications (Issue #6, #8)"]
@@ -154,6 +158,9 @@ flowchart TD
     S3In -->|Object Created event| EB
     EB -->|Start execution<br/>with S3 event data| PutMetadata
     PutMetadata -->|Write metadata| DDB
+    ProcessAudio -->|Download audio| S3In
+    ProcessAudio -->|Upload processed audio| S3Out
+    ProcessAudio -->|Update metadata<br/>(outputLocation, size)| DDB
     UpdateCompleted -->|Update status| DDB
     UpdateFailed -->|Update status<br/>+ error details| DDB
     Polly -->|Write audio| S3Out
@@ -170,7 +177,7 @@ flowchart TD
     SNSFailed -.-> CW
 ```
 
-The diagram reflects the **complete integrated pipeline (Issue #8)**: ingestion and event detection 
+The diagram reflects the **complete integrated pipeline (Issue #11)**: ingestion and event detection 
 feed the Step Functions state machine with transformed S3 event data. The state machine:
 
 1. Writes initial metadata to DynamoDB (status=PROCESSING)
@@ -383,13 +390,15 @@ The following foundational resources are now implemented:
   - `Project`: SleepAudioPipeline
 - **Attributes** (stored in item):
   - `audioId`: Unique identifier (S3 object key)
-  - `status`: Current processing status (PROCESSING, COMPLETED, FAILED) — Issues #5 and #6
+  - `status`: Current processing status (PROCESSING, COMPLETED, FAILED) — Issues #5, #6, #11
   - `inputBucket`: S3 bucket name where the raw audio was uploaded
   - `inputKey`: S3 object key of the raw audio
+  - `outputLocation`: S3 URI of processed audio (e.g., `s3://bucket/processed/file_timestamp.mp3`) — Issue #11
+  - `outputSize`: Size of processed audio file in bytes — Issue #11
   - `createdAt`: Timestamp when the pipeline started processing
-  - `updatedAt`: Timestamp when status was last updated — Issue #6
+  - `updatedAt`: Timestamp when status was last updated — Issues #6, #11
   - `errorInfo`: Error details if status is FAILED — Issue #6
-  - Future attributes: `outputKey`, `duration`, etc.
+  - Future attributes: `duration`, `processingMetrics`, etc.
 
 ### SNS Topics for Notifications — Issue #6
 
@@ -422,52 +431,71 @@ The following foundational resources are now implemented:
 - **Removal Policy**: DESTROY (safe for non-production environments)
 - **Usage**: Shared by both SNS topics for consistent encryption
 
-### Lambda Function (`SleepAudioProcessor`) — Issue #7, #8, #10
+### Lambda Function (`SleepAudioProcessor`) — Issue #7, #8, #10, #11
 - **Function Name**: SleepAudioProcessor
 - **Runtime**: Java 17 (matches CDK project runtime)
 - **Handler**: `com.myorg.lambda.SleepAudioProcessor::handleRequest`
-- **Timeout**: 30 seconds
-- **Memory**: 512 MB
+- **Timeout**: 60 seconds (Issue #11: increased for audio processing)
+- **Memory**: 1024 MB (Issue #11: increased for audio processing)
 - **X-Ray Tracing** (Issue #10): **Active tracing enabled** for end-to-end distributed tracing
 - **Environment Variables**:
   - `METADATA_TABLE_NAME`: DynamoDB table name for metadata access
-- **Purpose**: Audio processing, **input validation** (Issue #8), metadata enrichment, and **observability** (Issue #10)
-- **Current Functionality** (Issue #8, #10):
-  - **Input Validation**:
+  - `OUTPUT_BUCKET_NAME`: S3 output bucket name for processed audio (Issue #11)
+- **Purpose**: Complete audio processing pipeline including validation, download, processing, upload, and metadata management
+- **Current Functionality** (Issue #8, #10, #11):
+  - **Input Validation** (Issue #8):
     - Validates required fields: `bucket.name` and `object.key`
     - Validates file extensions: `.mp3`, `.wav`, `.m4a` (case-insensitive)
     - Throws `IllegalArgumentException` for missing fields or unsupported formats
+  - **Audio Processing** (Issue #11):
+    - **Download**: Retrieves raw audio file from Input S3 bucket using AWS SDK v2
+    - **Process**: Performs audio processing (normalization, enhancement for sleep/relaxation)
+    - **Generate Output Key**: Creates unique output key with timestamp (e.g., `processed/filename_1234567890.mp3`)
+    - **Upload**: Uploads processed audio to Output S3 bucket
+    - **Update Metadata**: Updates DynamoDB with:
+      - `outputLocation`: S3 URI of processed audio (e.g., `s3://bucket/processed/file_timestamp.mp3`)
+      - `outputSize`: File size in bytes
+      - `status`: Set to "COMPLETED"
+      - `updatedAt`: Timestamp of completion
   - **Structured Logging** (Issue #10):
     - JSON-formatted log entries with timestamp, level, message, requestId, objectKey
+    - Logs all processing steps: download, process, upload, DynamoDB update
     - Request ID included in all log entries for tracing
     - Error logs include error type and error message
-    - Logs input validation steps and completion status
-  - Extracts S3 event details (bucket name, object key)
-  - Returns enriched metadata response with:
-    - `status`: "VALIDATED"
+    - Performance metrics: download size, output size, processing duration
+  - Returns comprehensive response with:
+    - `status`: "COMPLETED" (changed from "VALIDATED" in Issue #11)
+    - `outputLocation`: S3 URI of processed audio
+    - `outputBucket`: Output bucket name
+    - `outputKey`: Output object key
+    - `outputSize`: File size in bytes
+    - `processingDuration`: Processing time in milliseconds
     - `fileExtension`: Detected file extension
-    - `bucketName`: S3 bucket name
-    - `objectKey`: S3 object key
+    - `bucketName`: Input S3 bucket name
+    - `objectKey`: Input S3 object key
     - `processorVersion`: "1.0.0"
     - `timestamp`: Processing timestamp
     - `requestId`: AWS request ID for tracing (Issue #10)
-  - **Error Handling**: Validation failures throw exceptions that are caught by state machine 
-    error handling and routed to the failure path
+    - `metadataUpdated`: true (confirms DynamoDB update)
+  - **Error Handling**: All errors (validation, S3, DynamoDB) throw exceptions that are caught by 
+    state machine error handling and routed to the failure path
 - **IAM Permissions**: Least-privilege execution role with:
   - DynamoDB read/write access to metadata table
+  - S3 read access to input bucket (Issue #11)
+  - S3 write access to output bucket (Issue #11)
   - CloudWatch Logs write access
   - **X-Ray write access** (Issue #10): For distributed tracing
 - **Integration**: Invoked by state machine between PutMetadata and Polly tasks
 - **Input**: Receives S3 event details and DynamoDB result from state machine
-- **Output**: Returns validation status and enriched metadata to state machine ($.processorResult)
+- **Output**: Returns processing status, output location, and enriched metadata to state machine ($.processorResult)
 - **Testing** (Issue #8, #10): 
   - 9 unit tests covering validation logic and structured logging (all passing)
   - Tests for missing fields, unsupported extensions, and valid inputs
   - Uses Mockito for Lambda context mocking including getAwsRequestId()
 
-### Complete End-to-End Flow (Issue #8)
+### Complete End-to-End Flow (Issue #8, #11)
 
-This section documents the **complete integrated pipeline** from S3 upload to notification.
+This section documents the **complete integrated pipeline** from S3 upload to notification, including **full audio processing** (Issue #11).
 
 #### Success Flow
 1. **User uploads audio** → S3 Ingestion Bucket (e.g., `raw/user123/meditation.mp3`)
@@ -479,13 +507,20 @@ This section documents the **complete integrated pipeline** from S3 upload to no
    - `inputBucket`: bucket name
    - `inputKey`: object key
    - `createdAt`: event timestamp
-5. **Lambda Validation** → SleepAudioProcessor validates:
-   - ✓ Bucket name exists
-   - ✓ Object key exists
-   - ✓ File extension is `.mp3` (supported)
-   - Returns: `{ status: "VALIDATED", fileExtension: ".mp3", ... }`
-6. **Polly Processing** → `startSpeechSynthesisTask` generates audio
-7. **UpdateStatus COMPLETED** → DynamoDB record updated:
+5. **Lambda Processing** → SleepAudioProcessor performs full audio processing (Issue #11):
+   - ✓ **Validates** bucket name, object key, file extension `.mp3`
+   - ✓ **Downloads** audio from Input S3: `raw/user123/meditation.mp3`
+   - ✓ **Processes** audio (normalization, enhancement for sleep/relaxation)
+   - ✓ **Generates** unique output key: `processed/meditation_1234567890.mp3`
+   - ✓ **Uploads** processed audio to Output S3 bucket
+   - ✓ **Updates DynamoDB** metadata:
+     - `outputLocation`: "s3://output-bucket/processed/meditation_1234567890.mp3"
+     - `outputSize`: 2457600 (bytes)
+     - `status`: "COMPLETED"
+     - `updatedAt`: completion timestamp
+   - Returns: `{ status: "COMPLETED", outputLocation: "s3://...", outputSize: 2457600, processingDuration: 1523, ... }`
+6. **Polly Processing** → `startSpeechSynthesisTask` generates optional narration audio
+7. **UpdateStatus COMPLETED** → DynamoDB record updated (final confirmation):
    - `status`: "COMPLETED"
    - `updatedAt`: completion timestamp
 8. **SNS Success Notification** → Published to completedTopic:

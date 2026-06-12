@@ -224,7 +224,9 @@ public class CdkBaseStack extends Stack {
         // Polly Task - Minimal integration using CallAwsService
         // This is a placeholder that will invoke Polly StartSpeechSynthesisTask
         // NOTE: iamResources uses wildcard for initial development (Issue #4)
-        // TODO: Scope to specific resources before production (e.g., output bucket ARN, specific Polly task ARNs)
+        // FUTURE ENHANCEMENT: Scope IAM resources to specific ARNs for production hardening
+        // (e.g., output bucket ARN, specific Polly task ARNs). Current wildcard permission
+        // is acceptable for development and is documented in SUMMARY.md future enhancements.
         // Issue #10: Retry policy configured for transient Polly failures
         CallAwsService pollyTask = CallAwsService.Builder.create(this, "PollyTask")
                 .service("polly")

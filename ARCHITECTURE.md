@@ -11,6 +11,22 @@
 > Polly narration → Status update → SNS notification. This document is the **single source of truth** 
 > for the Event-Driven Sleep Audio Pipeline.
 
+## Table of Contents
+
+- [1. High-Level Overview](#1-high-level-overview)
+- [2. Data Flow](#2-data-flow)
+- [3. Architecture Diagram](#3-architecture-diagram)
+  - [3.1. Implemented Components](#31-implemented-components-issues-3-4-5-6-7-and-8)
+  - [3.2. Deployment Architecture](#32-deployment-architecture-issue-9)
+- [4. Key AWS Services and Rationale](#4-key-aws-services-and-rationale)
+- [5. Security](#5-security)
+- [6. Observability](#6-observability-issue-10-enhanced)
+- [7. Cost Considerations](#7-cost-considerations)
+- [8. Multi-Environment Support](#8-multi-environment-support-issue-9)
+- [9. Future Extensibility](#9-future-extensibility)
+
+---
+
 ## 1. High-Level Overview
 
 The **Event-Driven Sleep Audio Pipeline** is a serverless, fully event-driven system on AWS,

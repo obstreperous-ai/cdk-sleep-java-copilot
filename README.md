@@ -35,6 +35,10 @@
 - [Acknowledgments](#acknowledgments)
 - [License](#license)
 
+---
+
+**📊 [EXPERIMENT.md](EXPERIMENT.md)** - Comprehensive experiment design document capturing methodology, actors, prompting patterns, and observations from this agentic TDD IaC project.
+
 ## Overview
 
 The **Sleep Audio Pipeline** is a fully serverless, event-driven system for processing and enhancing audio files into soothing sleep audio content. The pipeline leverages AWS services including S3, Lambda, Step Functions, DynamoDB, SNS, and Polly to automatically ingest, validate, process, and distribute audio files.
@@ -366,6 +370,7 @@ The project includes GitHub Actions workflow (`.github/workflows/ci.yml`):
 
 ## Related Documentation
 
+- **[EXPERIMENT.md](EXPERIMENT.md)** - 📊 **Comprehensive experiment design document** - Captures methodology, actors (GitHub Copilot + Java), prompting patterns, issue history (Issues #1-#13), key decisions, and preliminary observations from this agentic TDD IaC project
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - Comprehensive architecture documentation with Mermaid diagrams
 - **[META-PROMPTS.md](META-PROMPTS.md)** - Reusable patterns and agent guidelines for agentic TDD IaC projects
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** - Development guidelines and TDD workflow

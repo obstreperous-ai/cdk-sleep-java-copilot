@@ -296,6 +296,158 @@ class SleepAudioProcessorTest {
         assertEquals("COMPLETED", result.get("status"));
     }
 
+    // ===== Issue #15: Error Path Tests for Better Coverage =====
+
+    @Test
+    void handlesS3DownloadFailure() {
+        // Arrange: Input that will trigger S3 download error
+        Map<String, Object> input = createValidInput("test-bucket", "audio/test.mp3");
+        
+        // Mock S3 to throw exception on download
+        when(mockS3Client.getObjectAsBytes(any(GetObjectRequest.class)))
+            .thenThrow(new RuntimeException("S3 download failed"));
+
+        // Act & Assert: Should propagate the exception
+        Exception exception = assertThrows(RuntimeException.class, () -> {
+            processor.handleRequest(input, mockContext);
+        });
+        
+        assertTrue(exception.getMessage().contains("S3") || 
+                   exception.getMessage().contains("download"),
+            "Error message should mention S3 or download failure");
+    }
+
+    @Test
+    void handlesS3UploadFailure() {
+        // Arrange: Input that will succeed download but fail upload
+        Map<String, Object> input = createValidInput("test-bucket", "audio/test.mp3");
+        
+        // Mock S3 GetObject to succeed
+        byte[] sampleAudioData = new byte[]{0x00, 0x01, 0x02, 0x03, 0x04};
+        ResponseBytes<GetObjectResponse> responseBytes = ResponseBytes.fromByteArray(
+            GetObjectResponse.builder().build(),
+            sampleAudioData
+        );
+        when(mockS3Client.getObjectAsBytes(any(GetObjectRequest.class)))
+            .thenReturn(responseBytes);
+        
+        // Mock S3 PutObject to fail
+        when(mockS3Client.putObject(any(PutObjectRequest.class), any(RequestBody.class)))
+            .thenThrow(new RuntimeException("S3 upload failed"));
+
+        // Act & Assert: Should propagate the exception
+        Exception exception = assertThrows(RuntimeException.class, () -> {
+            processor.handleRequest(input, mockContext);
+        });
+        
+        assertNotNull(exception.getMessage());
+    }
+
+    @Test
+    void handlesDynamoDBUpdateFailure() {
+        // Arrange: Input that will succeed S3 operations but fail DynamoDB
+        Map<String, Object> input = createValidInput("test-bucket", "audio/test.mp3");
+        
+        // Mock S3 operations to succeed
+        byte[] sampleAudioData = new byte[]{0x00, 0x01, 0x02, 0x03, 0x04};
+        ResponseBytes<GetObjectResponse> responseBytes = ResponseBytes.fromByteArray(
+            GetObjectResponse.builder().build(),
+            sampleAudioData
+        );
+        when(mockS3Client.getObjectAsBytes(any(GetObjectRequest.class)))
+            .thenReturn(responseBytes);
+        when(mockS3Client.putObject(any(PutObjectRequest.class), any(RequestBody.class)))
+            .thenReturn(PutObjectResponse.builder().build());
+        
+        // Mock DynamoDB to fail
+        when(mockDynamoDbClient.updateItem(any(UpdateItemRequest.class)))
+            .thenThrow(new RuntimeException("DynamoDB update failed"));
+
+        // Act & Assert: Should propagate the exception
+        Exception exception = assertThrows(RuntimeException.class, () -> {
+            processor.handleRequest(input, mockContext);
+        });
+        
+        assertTrue(exception.getMessage().contains("DynamoDB") || 
+                   exception.getMessage().contains("update"),
+            "Error message should mention DynamoDB or update failure");
+    }
+
+    @Test
+    void handlesEmptyBucketName() {
+        // Arrange: Input with empty bucket name
+        Map<String, Object> input = new HashMap<>();
+        Map<String, Object> detail = new HashMap<>();
+        Map<String, Object> bucket = new HashMap<>();
+        Map<String, Object> object = new HashMap<>();
+        
+        bucket.put("name", ""); // Empty bucket name
+        object.put("key", "test.mp3");
+        detail.put("bucket", bucket);
+        detail.put("object", object);
+        input.put("detail", detail);
+
+        // Act & Assert: Should throw IllegalArgumentException
+        Exception exception = assertThrows(IllegalArgumentException.class, () -> {
+            processor.handleRequest(input, mockContext);
+        });
+        
+        assertTrue(exception.getMessage().contains("bucket name"),
+            "Error message should mention bucket name");
+    }
+
+    @Test
+    void handlesEmptyObjectKey() {
+        // Arrange: Input with empty object key
+        Map<String, Object> input = new HashMap<>();
+        Map<String, Object> detail = new HashMap<>();
+        Map<String, Object> bucket = new HashMap<>();
+        Map<String, Object> object = new HashMap<>();
+        
+        bucket.put("name", "test-bucket");
+        object.put("key", ""); // Empty object key
+        detail.put("bucket", bucket);
+        detail.put("object", object);
+        input.put("detail", detail);
+
+        // Act & Assert: Should throw IllegalArgumentException
+        Exception exception = assertThrows(IllegalArgumentException.class, () -> {
+            processor.handleRequest(input, mockContext);
+        });
+        
+        assertTrue(exception.getMessage().contains("object key"),
+            "Error message should mention object key");
+    }
+
+    @Test
+    void rejectsMissingDetailField() {
+        // Arrange: Input without detail field
+        Map<String, Object> input = new HashMap<>();
+        // detail is missing
+
+        // Act & Assert: Should throw IllegalArgumentException
+        Exception exception = assertThrows(IllegalArgumentException.class, () -> {
+            processor.handleRequest(input, mockContext);
+        });
+        
+        assertTrue(exception.getMessage().contains("detail"),
+            "Error message should mention missing detail field");
+    }
+
+    @Test
+    void handlesFileWithDotAtEnd() {
+        // Arrange: File with dot at the end but no extension
+        Map<String, Object> input = createValidInput("test-bucket", "audio/testfile.");
+
+        // Act & Assert: Should throw IllegalArgumentException
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> processor.handleRequest(input, mockContext)
+        );
+        assertTrue(exception.getMessage().contains("no extension") || 
+                   exception.getMessage().contains("Supported formats"));
+    }
+
     // ===== Helper Methods =====
 
     private void setupMockS3AndDynamoDB() {

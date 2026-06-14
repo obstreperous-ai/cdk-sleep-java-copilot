@@ -36,6 +36,35 @@ jobs:
       - name: Run Maven tests
         run: mvn --batch-mode test
 
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: target/site/jacoco/
+          retention-days: 30
+
+      - name: Display coverage summary
+        if: always()
+        run: |
+          if [ -f target/site/jacoco/index.html ]; then
+            echo "Coverage report generated successfully"
+            if [ -f target/site/jacoco/jacoco.csv ]; then
+              echo "=== Coverage Summary ==="
+              awk -F',' 'NR==1 {next} {
+                class=$3
+                inst_missed=$4
+                inst_covered=$5
+                line_missed=$9
+                line_covered=$10
+                if (line_missed + line_covered > 0) {
+                  line_cov = (line_covered / (line_missed + line_covered)) * 100
+                  printf "%-50s %6.1f%%\n", class, line_cov
+                }
+              }' target/site/jacoco/jacoco.csv | sort -t'%' -k2 -n
+            fi
+          fi
+
       - name: Run CDK synth (default environment)
         run: cdk synth
 
